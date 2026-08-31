@@ -386,12 +386,58 @@ function migrateDatabase(db: SqliteDatabase): void {
 
 function getDatabase(): SqliteDatabase {
   if (database) return database
-  const { DatabaseSync } = require('node:sqlite') as SqliteModule
+  const { DatabaseSync } = loadSqliteModule()
   const db = new DatabaseSync(getPlanningDatabasePath())
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
   migrateDatabase(db)
   database = db
   return db
+}
+
+/**
+ * 加载 SQLite 模块。
+ *
+ * Electron / Node ≥ 22 用 node:sqlite；Bun 环境（web-server）没有 node:sqlite，
+ * 回退到 bun:sqlite。
+ *
+ * 兼容差异：node:sqlite 的命名参数用裸名对象绑定 `:name` 占位符；
+ * bun:sqlite 要求对象键带前缀（`:name` / `@name` / `$name`），裸名会被
+ * 静默忽略并插入 NULL。因此对 bun:sqlite 做一层 prepare 包装，
+ * 把裸名参数键自动加 `:` 前缀后再绑定。
+ */
+function loadSqliteModule(): SqliteModule {
+  try {
+    return require('node:sqlite') as SqliteModule
+  } catch {
+    const mod = require('bun:sqlite') as { Database: new (path: string) => SqliteDatabase & { prepare(sql: string): { run(p?: unknown): unknown; all(p?: unknown): unknown[]; get(p?: unknown): unknown } } }
+    const WrappedDatabase = class {
+      constructor(path: string) {
+        const db = new mod.Database(path)
+        this.db = db
+      }
+      private readonly db: InstanceType<typeof mod.Database>
+      exec(sql: string): void {
+        this.db.exec(sql)
+      }
+      prepare(sql: string) {
+        const stmt = this.db.prepare(sql)
+        const prefixParams = (params?: unknown): unknown => {
+          if (!params || typeof params !== 'object' || Array.isArray(params)) return params
+          const out: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(params)) {
+            out[k.startsWith(':') || k.startsWith('@') || k.startsWith('$') ? k : `:${k}`] = v
+          }
+          return out
+        }
+        return {
+          run: (p?: unknown) => stmt.run(prefixParams(p) as never),
+          all: (p?: unknown) => stmt.all(prefixParams(p) as never) as unknown[],
+          get: (p?: unknown) => stmt.get(prefixParams(p) as never),
+        }
+      }
+    }
+    return { DatabaseSync: WrappedDatabase as unknown as new (path: string) => SqliteDatabase }
+  }
 }
 
 function assertText(value: string, field: string, max: number): string {

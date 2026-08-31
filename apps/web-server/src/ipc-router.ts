@@ -22,6 +22,7 @@ import {
   getSettings as getSettingsFromLib,
   updateSettings as updateSettingsFromLib,
 } from '../../electron/src/main/lib/settings-service'
+import { registerPlanningAutomationDomains } from './domains/planning-automation'
 
 export type IpcHandler<TArgs = unknown, TResult = unknown> = (
   args: TArgs,
@@ -132,11 +133,7 @@ register('agent:list-archived-sessions', async () => [])
 register('agent:get-workspace-capabilities', async () => ({}))
 register('chat:list-conversations', async () => [])
 register('scratch-pad:load', async () => null)
-register('planning:list-todos', async () => [])
-register('planning:list-calendar-events', async () => [])
-register('planning:list-groups', async () => [])
-register('planning:list-tags', async () => [])
-register('automation:list', async () => [])
+// planning / automation domain 由 domains/planning-automation.ts 接入真实业务（往下 register 调用）
 register('chat-tool:list', async () => [])
 register('git:get-repo-status', async () => null)
 register('git:get-unstaged-changes', async () => ({ files: [] }))
@@ -234,3 +231,6 @@ async function loadPtyFactory() {
   }
   return ptyFactoryPromise
 }
+// —— planning / automation domain：接主进程 lib 真实业务（SQLite + JSON）——
+// 依赖 PROMA_CONFIG_DIR 与 Electron 主进程共享同一份数据目录。
+registerPlanningAutomationDomains(register)
