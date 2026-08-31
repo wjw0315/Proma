@@ -128,10 +128,20 @@ describe('CLI dispatch', () => {
   })
 
   test('status（未运行）：打印 PID=无、HTTP 不可达', async () => {
+    // 写一份 port 指向本机不使用的端口的 settings，避免命中真实在跑的 web-server
+    const settingsPath = join(tmpHome, 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      webServer: { host: '127.0.0.1', port: 1, token: null, requireTokenOnPublic: true },
+    }))
     const { spawnSync } = await import('node:child_process')
     const cliPath = join(import.meta.dir, '..', 'src', 'cli.ts')
     const result = spawnSync(process.execPath, [cliPath, 'status'], {
-      env: { ...process.env, PROMA_WEB_CONFIG_DIR: tmpHome, PROMA_WEB_LOGS_DIR: join(tmpHome, 'logs') },
+      env: {
+        ...process.env,
+        PROMA_WEB_CONFIG_DIR: tmpHome,
+        PROMA_WEB_LOGS_DIR: join(tmpHome, 'logs'),
+        PROMA_WEB_SETTINGS_FILE: settingsPath,
+      },
       encoding: 'utf-8',
     })
     expect(result.status).toBe(0)

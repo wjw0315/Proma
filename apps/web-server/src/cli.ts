@@ -25,11 +25,13 @@
 import { PATHS } from './cli-paths'
 import { isAlive, readPid } from './cli-commands/pid'
 import { resolveEntry } from './cli-commands/entry'
+import { runInstall } from './cli-commands/install'
 import { runRestart } from './cli-commands/restart'
 import { readSettings } from './cli-commands/settings'
 import { runStart } from './cli-commands/start'
 import { runStatus } from './cli-commands/status'
 import { runStop } from './cli-commands/stop'
+import { runUninstall } from './cli-commands/uninstall'
 
 interface ParsedArgs {
   positional: string[]
@@ -100,11 +102,30 @@ async function main(): Promise<void> {
     case 'status':
       await runStatus()
       return
-    case 'install':
-    case 'uninstall':
+    case 'install': {
+      const dryRun = parsed.options.has('dry-run')
+      const binOverride = typeof parsed.options.get('bin') === 'string'
+        ? (parsed.options.get('bin') as string)
+        : undefined
+      const result = await runInstall({ dryRun, promaBin: binOverride })
+      for (const note of result.notes) {
+        // eslint-disable-next-line no-console
+        console.log(note)
+      }
+      return
+    }
+    case 'uninstall': {
+      const dryRun = parsed.options.has('dry-run')
+      const result = await runUninstall({ dryRun })
+      for (const note of result.notes) {
+        // eslint-disable-next-line no-console
+        console.log(note)
+      }
+      return
+    }
     case 'logs':
       // eslint-disable-next-line no-console
-      console.log(`[proma-web] 子命令 "${cmd}" 将在后续 commit 中实现`)
+      console.log('[proma-web] 子命令 "logs" 将在 commit 3 中实现')
       process.exit(0)
       return
     default:
