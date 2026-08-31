@@ -13,7 +13,20 @@
 
 import { execSync } from 'child_process'
 import { existsSync } from 'fs'
-import { app } from 'electron'
+import type { App } from 'electron'
+// app 延迟加载：仅 loadWindowsEnv 在 Windows 打包态用到；
+// 顶层 import 会把 electron 拉进静态依赖闭包，web-server（Bun）复用
+// git-detector 等模块时会失败。
+function loadElectronApp(): Pick<App, 'isPackaged'> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { app } = require('electron') as { app?: Pick<App, 'isPackaged'> }
+    return app ?? { isPackaged: false }
+  } catch {
+    // Bun 环境：视为非打包态（开发模式行为）
+    return { isPackaged: false }
+  }
+}
 import type { ShellEnvResult } from '@proma/shared'
 
 /**
@@ -155,7 +168,7 @@ export async function loadWindowsEnv(): Promise<ShellEnvResult> {
   }
 
   // 开发模式下跳过（从终端启动，PATH 已完整）
-  if (!app.isPackaged) {
+  if (!loadElectronApp().isPackaged) {
     return { success: true, loadedCount: 0, error: null }
   }
 
