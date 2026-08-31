@@ -25,6 +25,7 @@ import {
 import { registerPlanningAutomationDomains } from './domains/planning-automation'
 import { registerAgentSessionsDomain } from './domains/agent-sessions'
 import { registerChatAndChannelsDomains } from './domains/chat-channels'
+import { registerMiscDomains } from './domains/misc-fs'
 
 export type IpcHandler<TArgs = unknown, TResult = unknown> = (
   args: TArgs,
@@ -129,9 +130,8 @@ register('settings:update', async (args) => {
   return updateSettingsFromLib(updates as Parameters<typeof updateSettingsFromLib>[0])
 })
 // agent 会话/工作区只读 domain 由 domains/agent-sessions.ts 接入真实业务（往下注册）
-register('scratch-pad:load', async () => null)
+// scratch-pad 等小 domain 由 domains/misc-fs.ts 接入（往下注册）
 // planning / automation domain 由 domains/planning-automation.ts 接入真实业务（往下 register 调用）
-register('chat-tool:list', async () => [])
 register('git:get-repo-status', async () => null)
 register('git:get-unstaged-changes', async () => ({ files: [] }))
 register('git:get-file-diff', async () => ({ diff: '' }))
@@ -239,3 +239,6 @@ registerAgentSessionsDomain(register)
 // —— chat 会话 + channels domain：接主进程 lib 真实业务 ——
 // 对话索引/消息（JSON）+ 渠道列表（apiKey 保持加密态）。
 registerChatAndChannelsDomains(register)
+
+// —— 小 domain（scratch-pad / user-profile / system-prompt / chat-tool）——
+registerMiscDomains(register)
