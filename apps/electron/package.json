@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.5",
+  "version": "0.19.6",
   "description": "Proma，为专业用户设计的 Agent - Electron App",
   "main": "dist/main.cjs",
   "author": {
@@ -37,6 +37,7 @@
     "ensure:node-pty-helper": "bun run scripts/ensure-node-pty-helper-executable.ts",
     "start": "bun run build && bunx electron .",
     "typecheck": "tsc --noEmit",
+    "generate:web-shim": "bun run scripts/generate-web-shim.ts",
     "generate:icons": "cd resources && ./generate-icons.sh",
     "pack": "bun run build && bun run sync:runtime-deps && bun run rebuild:node-pty && electron-builder --dir",
     "dist": "bun run build && bun run sync:runtime-deps && bun run rebuild:node-pty && electron-builder",
