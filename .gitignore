@@ -16,6 +16,19 @@ apps/electron/resources/eventkit/
 apps/electron/resources/officecli/
 # bun build --compile 的临时中间产物
 *.bun-build
+# 内嵌 web-server 运行时（scripts/build-web-server.ts 生成）
+apps/electron/resources/web-server/
+# build-web-server.ts 用 mkdtempSync 留下的临时入口目录残留
+proma-web-server-entry-*/
+# preload AST codemod 自动生成的 web 形态 IPC 表（scripts/generate-web-shim.ts 生成）
+apps/electron/src/renderer/lib/platform/web-shim.generated.ts
+# Playwright 报告与运行产物
+playwright-report/
+e2e/playwright-report/
+e2e/test-results/
+e2e/.dev-pids.json
+# e2e 主动截图（README.md 保留）
+e2e/screenshots/*.png
 
 # code coverage
 coverage

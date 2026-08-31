@@ -75,6 +75,11 @@ extraResources:
     to: default-skills
     filter:
       - "**/*"
+  # 内嵌 Web 服务运行时（apps/web-server）。由 WebServerManager spawn。
+  - from: resources/web-server
+    to: web-server
+    filter:
+      - "**/*"
   # 教程文件（教程查看器 + 欢迎对话使用）
   - from: ../../tutorial/tutorial-v2.md
     to: tutorial.md
@@ -109,6 +114,10 @@ mac:
     - resources/agent-island/macos-agent-island-helper
     - resources/eventkit/macos-eventkit.node
     - resources/officecli/officecli
+    # 内嵌 Bun 运行时（prepare-bun 阶段按 host 架构产出到 resources/bin/<platform-arch>/bun）。
+    # hardenedRuntime 下必须显式声明，否则 spawn 会触发“unsigned auxiliary executable” 拦截。
+    - resources/bin/darwin-arm64/bun
+    - resources/bin/darwin-x64/bun
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: resources/entitlements.mac.plist

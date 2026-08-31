@@ -3,16 +3,28 @@ import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { existsSync } from 'fs'
 
-// Dev 与正式版使用独立的 userData 目录，避免共享 Chromium SingletonLock 导致 dev 启动被静默退出
-// 必须在任何会读取 userData 路径的模块加载之前执行
-if (!app.isPackaged) {
+// Dev 与正式版使用独立的 userData 目录，避免共享 Chromium SingletonLock
+// 导致 dev 或多次安装的旧/新正式版互相挤掉启动。
+// 必须在任何会读取 userData 路径的模块加载之前执行。
+//
+// 正式版：原代码未调用 app.setName()，Electron 会用 package.json 的 name 字段
+// "@proma/electron" 派生 userData 路径到 `~/Library/Application Support/@proma/electron`。
+// 因为与历史 userData 路径同名，新装一份 Proma.app 再启动会被旧版本的
+// Chromium SingletonLock 静默拒绝 → 用户表现为"双击图标闪退"。
+// 修复：基于 electron-builder.yml 中的 `appId=com.proma.app` 与 `productName=Proma`
+// 显式设置 name 与 userData，落到 `~/Library/Application Support/com.proma.app`，
+// 与历史 @proma/electron 路径物理隔离。
+if (app.isPackaged) {
+  app.setName('Proma')
+  app.setPath('userData', join(app.getPath('appData'), 'com.proma.app'))
+} else {
   // 多个 worktree 可显式隔离开发实例，避免其中一个分支抢走另一分支的 Chromium SingletonLock。
   const instance = process.env.PROMA_DEV_INSTANCE?.replace(/[^a-zA-Z0-9_-]/g, '')
   if (instance) app.setName(`Proma-${instance}`)
   app.setPath('userData', join(app.getPath('appData'), instance ? `@proma/electron-dev-${instance}` : '@proma/electron-dev'))
 }
 
-// 单实例锁：防止重复启动同一个版本（dev/prod 因 userData 已隔离，互不影响）
+// 单实例锁：防止重复启动同一个版本（dev / 正式版 / 不同正式版之间因 userData 路径隔离，互不影响）
 //
 // 失败的常见原因：用户升级新版本时旧版进程仍在后台运行（macOS 关闭窗口 = hide
 // 不退出）。原先此处直接 process.exit(0)，没有任何用户可见反馈——如果旧进程
@@ -80,6 +92,9 @@ import { createTray, destroyTray, getTray, setTrayFlash } from './tray'
 import { initializeRuntime } from './lib/runtime-init'
 import { seedDefaultSkills } from './lib/config-paths'
 import { upgradeDefaultSkillsInWorkspaces } from './lib/agent-workspace-manager'
+import { WebServerManager } from './lib/web-server-manager'
+import { resolveWebServerPaths, resolveBunBinary } from './lib/web-server-paths'
+import { registerWebServerHandlers, getWebServerManager } from './lib/web-server-handlers'
 import { hasActiveAgentSessions, stopAllAgents } from './lib/agent-service'
 import { stopAllTerminals } from './lib/terminal-service'
 import { disposePiMcpConnections } from './lib/adapters/pi-mcp-tools'
@@ -705,6 +720,19 @@ async function bootstrap(): Promise<void> {
 
   // Register IPC handlers
   registerIpcHandlers()
+
+  // 启动 Web 服务管理器（手动启动；autoStart 在 settings 打开时才自动起）
+  const webServerManager = new WebServerManager({
+    resolveEntry: () => resolveWebServerPaths().entry,
+    resolveBun: () => resolveBunBinary(),
+    onWillQuit: (cb) => app.on('before-quit', () => cb()),
+  })
+  registerWebServerHandlers(webServerManager)
+  // autoStart：用户配置过则拉起
+  const webCfg = webServerManager.getSettings()
+  if (webCfg.autoStart) {
+    safeRun('web-server autoStart', () => webServerManager.start())
+  }
 
   // 收敛上次退出时遗留的运行中委派子会话（内存态丢失，无法续跑）
   safeRun('markRunningDelegationsAsInterrupted', markRunningDelegationsAsInterrupted)

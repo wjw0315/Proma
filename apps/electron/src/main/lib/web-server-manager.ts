@@ -21,7 +21,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import type { WebServerSettings, WebServerStatus, WebServerStatusInfo, WebServerLogEntry } from '../../types/settings'
 import { DEFAULT_WEB_SERVER_SETTINGS } from '../../types/settings'
 
@@ -138,6 +138,9 @@ export class WebServerManager extends EventEmitter {
     if (this.settings.token) {
       env.PROMA_WEB_TOKEN = this.settings.token
     }
+    // 静态 UI 托管目录：与 server.cjs 同级的 web/（electron-builder extraResources 打包）。
+    // 目录不存在时 web-server 自动降级为纯 API，不影响启动。
+    env.PROMA_WEB_STATIC_DIR = join(dirname(entry), 'web')
 
     const spawnOpts: SpawnOptions = {
       env,

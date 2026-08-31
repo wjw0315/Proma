@@ -176,7 +176,7 @@ function main(): void {
   console.log(`  ${color.bold}详细日志${color.reset}: ${opts.verbose ? '开启' : '关闭'}`)
   printSeparator()
 
-  const totalSteps = 8
+  const totalSteps = 9
   let step = 0
 
   // ── 步骤 1: 准备与当前目标平台/架构匹配的 OfficeCLI ──
@@ -184,6 +184,15 @@ function main(): void {
   printStepStart(step, totalSteps, '准备 OfficeCLI 资源')
   results.push(
     runStep('准备 OfficeCLI 资源', 'bun', ['run', 'prepare:officecli'], { verbose: opts.verbose })
+  )
+  printStepResult(results[results.length - 1])
+  if (!results[results.length - 1].success) return printSummary(results)
+
+  // ── 步骤 1.5: 准备与当前目标平台/架构匹配的 Bun ──
+  step++
+  printStepStart(step, totalSteps, '准备 Bun 资源')
+  results.push(
+    runStep('准备 Bun 资源', 'bun', ['run', 'prepare:bun'], { verbose: opts.verbose })
   )
   printStepResult(results[results.length - 1])
   if (!results[results.length - 1].success) return printSummary(results)
@@ -233,7 +242,7 @@ function main(): void {
   printStepResult(results[results.length - 1])
   if (!results[results.length - 1].success) return printSummary(results)
 
-  // ── 步骤 7: 复制资源文件 ──
+  // ── 步骤 8: 复制资源文件 ──
   step++
   printStepStart(step, totalSteps, '复制资源文件')
   results.push(
@@ -241,7 +250,7 @@ function main(): void {
   )
   printStepResult(results[results.length - 1])
 
-  // ── 步骤 8: electron-builder 打包 ──
+  // ── 步骤 9: electron-builder 打包 ──
   step++
   printStepStart(step, totalSteps, 'Electron Builder 打包')
 
