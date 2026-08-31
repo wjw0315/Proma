@@ -26,6 +26,7 @@ import { PATHS } from './cli-paths'
 import { isAlive, readPid } from './cli-commands/pid'
 import { resolveEntry } from './cli-commands/entry'
 import { runInstall } from './cli-commands/install'
+import { parseLogsArgs, runLogs } from './cli-commands/logs'
 import { runRestart } from './cli-commands/restart'
 import { readSettings } from './cli-commands/settings'
 import { runStart } from './cli-commands/start'
@@ -123,11 +124,18 @@ async function main(): Promise<void> {
       }
       return
     }
-    case 'logs':
-      // eslint-disable-next-line no-console
-      console.log('[proma-web] 子命令 "logs" 将在 commit 3 中实现')
-      process.exit(0)
+    case 'logs': {
+      const opts = parseLogsArgs(process.argv.slice(3))
+      if (!opts.follow) {
+        await runLogs({ n: opts.n, follow: false })
+        return
+      }
+      // follow 模式：绑 SIGINT 让 Ctrl+C 干净退出
+      const ac = new AbortController()
+      process.once('SIGINT', () => ac.abort())
+      await runLogs({ n: opts.n, follow: true, signal: ac.signal })
       return
+    }
     default:
       usage()
       process.exit(2)

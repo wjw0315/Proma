@@ -1,6 +1,6 @@
 {
   "name": "@proma/web-server",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "AGPL-3.0-only",
   "description": "Proma web-server: Bun + Hono, exposes main-process IPC over HTTP/SSE/WS for the browser renderer",
   "type": "module",

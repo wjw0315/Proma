@@ -11,6 +11,7 @@ import { PATHS } from '../cli-paths'
 import { runCommand, writeFileWithBackup } from '../daemon'
 import { LAUNCHD_LABEL, renderLaunchdPlist } from '../daemon/launchd'
 import { SYSTEMD_UNIT_FILENAME, renderSystemdUnit } from '../daemon/systemd'
+import { buildWindowsInstallCommands, buildWindowsInstallPlan, detectElevation } from '../daemon/windows-service'
 
 export interface InstallOptions {
   /** proma-web 可执行路径；缺省取当前进程 execPath（即 bun） */
@@ -98,11 +99,39 @@ export async function runInstall(options: InstallOptions = {}): Promise<InstallR
       return { platform, notes, backupPath: bakPath, commands }
     }
     case 'win32': {
-      // commit 3 实现
-      return {
-        platform,
-        notes: ['Windows 安装请在管理员 PowerShell 里运行 proma-web install（commit 3 实现）'],
+      const plan = buildWindowsInstallPlan({ promaBin: options.promaBin })
+      const cmds = buildWindowsInstallCommands(promaBin, plan.serviceName)
+      notes.push(...plan.notes)
+      const elevated = !options.dryRun && await detectElevation()
+      if (options.dryRun || !elevated) {
+        notes.push('---\n# 提示：以下 PowerShell 脚本需以管理员身份运行\n---')
+        notes.push(plan.powershell)
+        if (!options.dryRun && !elevated) {
+          notes.push('当前进程未检测到管理员权限；请在管理员 PowerShell 中执行上方脚本。')
+        }
       }
+      else {
+        // 管理员权限下也走 PowerShell -File <tempfile>：
+        // sc.exe 的 binPath= / start= 语法空格解析复杂，
+        // shell 转义一旦错就静默丢参数，最稳是喂 PS 脚本。
+        const fs = await import('node:fs/promises')
+        const os = await import('node:os')
+        const path = await import('node:path')
+        const tempScript = path.join(os.tmpdir(), `proma-web-install-${Date.now()}.ps1`)
+        await fs.writeFile(tempScript, plan.powershell, 'utf-8')
+        notes.push(`已生成临时脚本：${tempScript}`)
+        try {
+          await runCommand('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tempScript])
+          notes.push('Windows 服务注册成功')
+        }
+        catch (error) {
+          notes.push(`PowerShell 执行失败：${(error as Error).message}`)
+        }
+        finally {
+          await fs.unlink(tempScript).catch(() => {})
+        }
+      }
+      return { platform, notes, commands: cmds }
     }
     default:
       return {

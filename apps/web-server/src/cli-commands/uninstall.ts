@@ -9,6 +9,7 @@ import { PATHS } from '../cli-paths'
 import { removeIfExists, runCommand } from '../daemon'
 import { LAUNCHD_LABEL } from '../daemon/launchd'
 import { SYSTEMD_UNIT_FILENAME } from '../daemon/systemd'
+import { buildWindowsUninstallCommands, buildWindowsUninstallPlan, detectElevation } from '../daemon/windows-service'
 
 export interface UninstallOptions {
   dryRun?: boolean
@@ -18,6 +19,7 @@ export interface UninstallResult {
   platform: 'linux' | 'darwin' | 'win32' | 'unsupported'
   notes: string[]
   removed: string[]
+  commands?: string[]
 }
 
 export async function runUninstall(options: UninstallOptions = {}): Promise<UninstallResult> {
@@ -73,12 +75,32 @@ export async function runUninstall(options: UninstallOptions = {}): Promise<Unin
       return { platform, notes, removed }
     }
     case 'win32': {
-      // commit 3 实现
-      return {
-        platform,
-        notes: ['Windows 卸载请以管理员身份运行 proma-web uninstall（commit 3 实现）'],
-        removed: [],
+      const plan = buildWindowsUninstallPlan()
+      const cmds = buildWindowsUninstallCommands(plan.serviceName)
+      notes.push(...plan.notes)
+      const elevated = !options.dryRun && await detectElevation()
+      if (options.dryRun || !elevated) {
+        notes.push('---\n# 提示：以下 PowerShell 脚本需以管理员身份运行\n---')
+        notes.push(plan.powershell)
       }
+      else {
+        const fs = await import('node:fs/promises')
+        const os = await import('node:os')
+        const path = await import('node:path')
+        const tempScript = path.join(os.tmpdir(), `proma-web-uninstall-${Date.now()}.ps1`)
+        await fs.writeFile(tempScript, plan.powershell, 'utf-8')
+        try {
+          await runCommand('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tempScript])
+          notes.push('Windows 服务已停止并删除')
+        }
+        catch (error) {
+          notes.push(`PowerShell 执行失败：${(error as Error).message}`)
+        }
+        finally {
+          await fs.unlink(tempScript).catch(() => {})
+        }
+      }
+      return { platform, notes, removed: [], commands: cmds }
     }
     default:
       return {
