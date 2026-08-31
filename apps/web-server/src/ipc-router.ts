@@ -74,46 +74,9 @@ register('runtime:reinit', async () => {
 })
 
 // —— Step 7 最小真实链路：chat 流式 echo（用于 E2E 验证 SSE 路径）——
-// 不引入 AI provider；推一条 delta chunk 给前端，验证浏览器端完整 SSE 链路。
-register('chat:send-message', async (args, ctx) => {
-  // /api/ipc 会把整个 args 字段当作位置参数传入。
-  // renderer 侧 web-shim 是 safeRequest(platform, channel, args, placeholder)，
-  // args 是 preload 透传的数组；这里我们解构第一个元素。
-  const raw = (args ?? {}) as { sessionId?: string; content?: string } | unknown[]
-  let sessionId: string | undefined
-  let content: string | undefined
-  if (Array.isArray(raw)) {
-    const first = raw[0] as { sessionId?: string; content?: string } | undefined
-    sessionId = first?.sessionId
-    content = first?.content
-  }
-  else {
-    sessionId = raw.sessionId
-    content = raw.content
-  }
-  if (!sessionId) throw new Error('chat:send-message 需要 sessionId')
-  content = typeof content === 'string' ? content : ''
-  // 异步推 SSE chunk：避免阻塞 invoke 返回
-  setImmediate(() => {
-    try {
-      ctx.eventBus.publish(`chat:stream:${sessionId}`, {
-        kind: 'delta',
-        content: `echo: ${content}`,
-        seq: 1,
-      })
-      // 标记完成
-      ctx.eventBus.publish(`chat:stream:${sessionId}`, {
-        kind: 'done',
-        sessionId,
-        ts: Date.now(),
-      })
-    }
-    catch (err) {
-      ctx.log('error', 'chat:send-message publish 失败', { message: (err as Error).message })
-    }
-  })
-  return { ok: true, sessionId, accepted: true }
-})
+// 原 echo 占位已删除：chat:send-message 由 registerChatAndChannelsDomains 注入真实业务
+// （调用主进程 chat-service.sendMessage，sink 包裹 eventBus.publish），把 STREAM_*
+// 事件经 SSE 推到前端。
 
 // —— Step 4 最小通道占位，供 web-shim.ts 高频调用 ——
 // 这些占位返回空结构，避免 Web 形态下崩溃。Step 7 接入真实主进程业务后会被覆盖。

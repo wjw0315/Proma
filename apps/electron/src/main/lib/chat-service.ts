@@ -5,7 +5,7 @@
  * - 查找渠道、解密 API Key
  * - 管理 AbortController
  * - 调用 @proma/core 的 Provider 适配器系统
- * - 桥接 StreamEvent → webContents.send()
+ * - 桥接 StreamEvent → sink.send()
  * - 持久化消息到 JSONL + 更新索引
  * - 模块化工具的 function calling 循环（通过 ChatToolRegistry + ChatToolExecutor）
  *
@@ -13,9 +13,15 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { WebContents } from 'electron'
 import { CHAT_IPC_CHANNELS } from '@proma/shared'
-import type { ChatSendInput, ChatMessage, GenerateTitleInput, FileAttachment, ChatToolActivity } from '@proma/shared'
+import type {
+  ChatSendInput,
+  ChatMessage,
+  GenerateTitleInput,
+  FileAttachment,
+  ChatToolActivity,
+  StreamSink,
+} from '@proma/shared'
 import {
   getAdapter,
   streamSSE,
@@ -188,11 +194,12 @@ function filterHistory(
  * 通过 ChatToolExecutor 统一执行工具调用。
  *
  * @param input 发送参数
- * @param webContents 渲染进程的 webContents 实例（用于推送事件）
+ * @param sink 流式事件订阅目标；Electron 主进程由 ipc.ts 把 webContents.send 包装，
+ *             web-server 形态由 chat-channels.ts 把 event-bus.publish 包装。
  */
 export async function sendMessage(
   input: ChatSendInput,
-  webContents: WebContents,
+  sink: StreamSink,
 ): Promise<boolean> {
   const {
     conversationId, userMessage, channelId,
@@ -204,7 +211,7 @@ export async function sendMessage(
   const channels = listChannels()
   const channel = channels.find((c) => c.id === channelId)
   if (!channel) {
-    webContents.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
+    sink.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
       conversationId,
       error: '渠道不存在',
     })
@@ -216,7 +223,7 @@ export async function sendMessage(
   // still reference a formerly selectable subscription model.
   if (channel.provider === 'openai-codex' || channel.provider === 'xai') {
     const providerName = channel.provider === 'xai' ? 'xAI（Grok OAuth）' : 'ChatGPT 订阅（Codex OAuth）'
-    webContents.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
+    sink.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
       conversationId,
       error: `Chat 模式暂不支持 ${providerName}，请切换到 Agent 模式使用。`,
     })
@@ -228,7 +235,7 @@ export async function sendMessage(
   try {
     apiKey = await resolveChannelRuntimeApiKey(channelId)
   } catch {
-    webContents.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
+    sink.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
       conversationId,
       error: '解密 API Key 失败',
     })
@@ -291,14 +298,14 @@ export async function sendMessage(
       switch (event.type) {
         case 'chunk':
           accumulatedContent += event.delta ?? ''
-          webContents.send(CHAT_IPC_CHANNELS.STREAM_CHUNK, {
+          sink.send(CHAT_IPC_CHANNELS.STREAM_CHUNK, {
             conversationId,
             delta: event.delta,
           })
           break
         case 'reasoning':
           accumulatedReasoning += event.delta ?? ''
-          webContents.send(CHAT_IPC_CHANNELS.STREAM_REASONING, {
+          sink.send(CHAT_IPC_CHANNELS.STREAM_REASONING, {
             conversationId,
             delta: event.delta,
           })
@@ -309,7 +316,7 @@ export async function sendMessage(
             toolName: event.toolName!,
             type: 'start',
           })
-          webContents.send(CHAT_IPC_CHANNELS.STREAM_TOOL_ACTIVITY, {
+          sink.send(CHAT_IPC_CHANNELS.STREAM_TOOL_ACTIVITY, {
             conversationId,
             activity: { type: 'start', toolName: event.toolName!, toolCallId: event.toolCallId! },
           })
@@ -354,7 +361,7 @@ export async function sendMessage(
       const lastUserMsg = fullHistory.filter((m) => m.role === 'user').at(-1)
       const lastAssistantMsg = fullHistory.filter((m) => m.role === 'assistant').at(-1)
       const toolResults = await executeToolCalls(toolCalls, {
-        webContents,
+        sink,
         conversationId,
         currentAttachments: attachments,
         previousUserAttachments: lastUserMsg?.attachments,
@@ -446,7 +453,7 @@ export async function sendMessage(
       console.warn(`[聊天服务] 模型返回空内容且无生成附件，跳过保存 (对话 ${conversationId})`)
     }
 
-    webContents.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
+    sink.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
       conversationId,
       model: modelId,
       messageId: (accumulatedContent.trim() || accumulatedGeneratedAttachments.length > 0) ? assistantMsgId : undefined,
@@ -478,13 +485,13 @@ export async function sendMessage(
           // 索引更新失败不影响主流程
         }
 
-        webContents.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
+        sink.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
           conversationId,
           model: modelId,
           messageId: assistantMsgId,
         })
       } else {
-        webContents.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
+        sink.send(CHAT_IPC_CHANNELS.STREAM_COMPLETE, {
           conversationId,
           model: modelId,
         })
@@ -538,7 +545,7 @@ export async function sendMessage(
       }
     }
 
-    webContents.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
+    sink.send(CHAT_IPC_CHANNELS.STREAM_ERROR, {
       conversationId,
       error: errorMessage,
     })

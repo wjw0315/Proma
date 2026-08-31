@@ -4,7 +4,9 @@
  * 来源优先级：
  * 1. Authorization: Bearer xxx
  * 2. 查询参数 ?token=xxx
- * 3. SSE / WS 在 query 里传 token
+ * 3. Cookie proma_web_token（静态 UI 场景：浏览器打开 /?token=xxx 后，
+ *    后续 /assets/* 请求无法携带 query token，靠 cookie 续推鉴权）
+ * 4. SSE / WS 在 query 里传 token
  *
  * 未配置 token 时，所有请求视为通过（仅 127.0.0.1 默认绑定时生效）。
  */
@@ -29,11 +31,21 @@ export function createAuthMiddleware(config: WebServerConfig): MiddlewareHandler
 
     const headerToken = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
     const queryToken = c.req.query('token')
-    const provided = headerToken ?? queryToken
+    const cookieToken = getCookie(c.req.raw.headers.get('cookie'), 'proma_web_token')
+    const provided = headerToken ?? queryToken ?? cookieToken
     if (!provided || !constantTimeEqual(provided, expected)) {
       return c.json({ ok: false, error: { message: '鉴权失败', code: 'AUTH_REQUIRED' } }, 401)
     }
-    return next()
+    // 静态 UI：首次用 ?token= 打开后种 cookie，后续资源 / API 请求凭 cookie 访问。
+    // 必须往 await next() 之后的最终响应上写（next() 会覆盖 c.res）。
+    const shouldSetCookie = Boolean(queryToken) && !cookieToken
+    await next()
+    if (shouldSetCookie && queryToken) {
+      c.res.headers.set(
+        'set-cookie',
+        `proma_web_token=${encodeURIComponent(queryToken)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`,
+      )
+    }
   }
 }
 
@@ -44,4 +56,17 @@ function constantTimeEqual(a: string, b: string): boolean {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
   }
   return diff === 0
+}
+
+/** 从 Cookie 头中解析指定 key（不引入依赖，仅处理简单的 a=b; c=d 形式）。 */
+function getCookie(cookieHeader: string | null, key: string): string | undefined {
+  if (!cookieHeader) return undefined
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === key) {
+      return decodeURIComponent(part.slice(eq + 1).trim())
+    }
+  }
+  return undefined
 }

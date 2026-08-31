@@ -6,8 +6,7 @@
  */
 
 import type { ToolCall, ToolResult } from '@proma/core'
-import type { WebContents } from 'electron'
-import type { FileAttachment } from '@proma/shared'
+import type { FileAttachment, StreamSink } from '@proma/shared'
 import { CHAT_IPC_CHANNELS } from '@proma/shared'
 import { isWebSearchToolCall, executeWebSearchTool } from './chat-tools/web-search-tool'
 import { isCustomHttpToolCall, executeHttpTool } from './chat-tools/http-tool-executor'
@@ -18,8 +17,8 @@ import { getChatToolsConfig } from './chat-tool-config'
 
 /** 工具执行上下文 */
 export interface ToolExecutionContext {
-  /** webContents 用于推送工具活动事件 */
-  webContents: WebContents
+  /** 流式事件订阅目标；由调用方注入(主进程 ipc.ts 用 webContentsSink, web-server 用 eventBusSink) */
+  sink: StreamSink
   /** 对话 ID */
   conversationId: string
   /** 当前用户消息的附件列表 */
@@ -79,7 +78,7 @@ export async function executeToolCalls(
     results.push(result)
 
     // 推送工具结果事件给前端
-    context.webContents.send(CHAT_IPC_CHANNELS.STREAM_TOOL_ACTIVITY, {
+    context.sink.send(CHAT_IPC_CHANNELS.STREAM_TOOL_ACTIVITY, {
       conversationId: context.conversationId,
       activity: {
         type: 'result',

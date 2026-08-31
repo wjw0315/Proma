@@ -101,14 +101,14 @@ export async function safeRequest(
  * 把生成表里的 method 包装成实际函数（透传 args）。
  * 生成的 kind 决定调用形式：
  *   - invoke / send → safeRequest（捕获 PlatformUnsupportedError 降级）
- *   - on → WEB_PLATFORM.subscribe（事件源；web-server 暂未实现 SSE 推送，返回 no-op unsubscribe）
+ *   - on → WEB_PLATFORM.subscribe（事件源；走 SSE，web-server event-bus publish 即推送）
  */
 function buildGeneratedMethod(method: string, spec: GeneratedWebMethodSpec, platform: PlatformAPI = WEB_PLATFORM): WebMethod {
   if (spec.kind === 'on') {
     return (handler: unknown) => {
-      // 静默订阅：web-server event-bus 暂未实现 SSE 推送，
-      // 返回 no-op unsubscribe 让 UI 卸载时不崩
-      return () => {}
+      // 走 SSE：web-server 的 event-bus.publish(channel, payload) 会推到 EventSource；
+      // web-bridge.client.ts 已把 JSON 帧的 data 字段透传给 handler。
+      return platform.subscribe(spec.channel, handler as (event: unknown) => void)
     }
   }
   const placeholder = pickPlaceholder(method)
@@ -131,12 +131,23 @@ export function installWebElectronProxy(platform: PlatformAPI = WEB_PLATFORM): v
     generatedMethods[method] = buildGeneratedMethod(method, spec, platform)
   }
 
+  // updater 命名空间在 Web 形态下提供“足够真实”的 stub，避免 atoms/updater.ts
+  // 在 useEffect 中调 updater.getStatus() 后 .then(setStatus) 拿到 undefined 报错。
+  const updaterStub = {
+    getStatus: async () => ({ status: 'idle' as const }),
+    onStatusChanged: () => () => {},
+    checkForUpdates: async () => undefined,
+    quitAndInstall: async () => undefined,
+    getVersion: async () => null,
+    getChannel: async () => null,
+  }
+
   const proxy = new Proxy({} as Record<string, unknown>, {
     get(_target, prop) {
       if (typeof prop !== 'string') return undefined
       // 1) 命名空间：返回安全 stub（任何访问都不抛）
+      if (prop === 'updater') return updaterStub
       if (
-        prop === 'updater' ||
         prop === 'feishu' ||
         prop === 'dingtalk' ||
         prop === 'agentIsland' ||

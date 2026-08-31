@@ -67,36 +67,64 @@ describe('web-server /api/ipc', () => {
     expect(res.status).toBe(400)
   })
 
-  test('chat:send-message 立即返回 ok，并异步推 SSE delta chunk', async () => {
-    const sessionId = `e2e-${Date.now()}`
-    const received: { kind: string; content?: string }[] = []
-    const unsub = webEventBus.subscribe(`chat:stream:${sessionId}`, (event) => {
-      const data = event.data as { kind: string; content?: string }
-      received.push(data)
-    })
+  test('chat:send-message 接入主进程 chat-service，错误情况下推 STREAM_ERROR', async () => {
+    // 准备 conversation（避免主进程在 channelId 验证路径上导致某些侧走不开）
+    const created = await fetch(`${baseUrl}/api/ipc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'chat:create-conversation',
+        args: ['server.test send-message'],
+      }),
+    }).then((r) => r.json()) as { ok: boolean; data: { id: string } }
+    expect(created.ok).toBe(true)
+    const conversationId = created.data.id
 
+    const received: { channel: string; payload: unknown }[] = []
+    const unsubs: Array<() => void> = []
+    for (const ch of ['chat:stream:chunk', 'chat:stream:error', 'chat:stream:complete']) {
+      unsubs.push(webEventBus.subscribe(ch, (event) => {
+        received.push({ channel: event.channel, payload: event.data })
+      }))
+    }
+
+    // 用不存在的 channelId 让 chat-service 走真实路径并推 STREAM_ERROR
     const res = await fetch(`${baseUrl}/api/ipc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         channel: 'chat:send-message',
-        args: [{ sessionId, content: 'hello e2e' }],
+        args: [{
+          conversationId,
+          userMessage: 'hello e2e',
+          messageHistory: [],
+          channelId: 'no-such-channel-id',
+          modelId: 'no-such-model',
+        }],
       }),
     })
     expect(res.status).toBe(200)
-    const body = await res.json() as { ok: boolean; data: { accepted: boolean } }
+    const body = await res.json() as { ok: boolean; data: { accepted: boolean; conversationId: string } }
     expect(body.ok).toBe(true)
-    expect(body.data.accepted).toBe(true)
+    expect(body.data.accepted).toBe(false)
+    expect(body.data.conversationId).toBe(conversationId)
 
-    // 等待 setImmediate + publish 落盘
+    // 等待 chat-service.sendMessage 把 sink.send 推完
     await new Promise((r) => setTimeout(r, 100))
-    unsub()
+    unsubs.forEach((u) => u())
 
-    const delta = received.find((e) => e.kind === 'delta')
-    expect(delta).toBeDefined()
-    expect(delta?.content).toBe('echo: hello e2e')
-    const done = received.find((e) => e.kind === 'done')
-    expect(done).toBeDefined()
+    const errorEvent = received.find((e) => e.channel === 'chat:stream:error')
+    expect(errorEvent).toBeDefined()
+    const errorPayload = errorEvent?.payload as { conversationId: string; error: string } | undefined
+    expect(errorPayload?.conversationId).toBe(conversationId)
+    expect(errorPayload?.error).toContain('渠道不存在')
+
+    // 清理对话
+    await fetch(`${baseUrl}/api/ipc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: 'chat:delete-conversation', args: [conversationId] }),
+    })
   })
 
   test('window:minimize 等桌面专属能力抛 PlatformUnsupportedError', async () => {

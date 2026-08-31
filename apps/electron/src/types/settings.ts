@@ -290,6 +290,57 @@ export function normalizeProductivityToolsSettings(input: unknown): Productivity
   }
 }
 
+/** 内嵌 Web 服务（apps/web-server）设置 */
+export interface WebServerSettings {
+  /** Electron 启动后是否自动拉起 web-server；默认 false（手动启动） */
+  autoStart: boolean
+  /** 监听地址；公网自托管必须同时设置 token */
+  host: string
+  /** 监听端口 */
+  port: number
+  /** 鉴权 token；为空时仅允许 loopback 访问 */
+  token: string | null
+  /** 是否要求 0.0.0.0 时强制 token；默认 true */
+  requireTokenOnPublic: boolean
+  /** 单次请求超时（毫秒） */
+  requestTimeoutMs: number
+  /** SSE 心跳间隔（毫秒） */
+  sseIdleMs: number
+}
+
+/** WebServerSettings 默认值；与 apps/web-server/src/config.ts DEFAULTS 对齐 */
+export const DEFAULT_WEB_SERVER_SETTINGS: WebServerSettings = {
+  autoStart: false,
+  host: '127.0.0.1',
+  port: 5174,
+  token: null,
+  requireTokenOnPublic: true,
+  requestTimeoutMs: 30_000,
+  sseIdleMs: 60_000,
+}
+
+/** 容错读取手写/旧 settings.json，缺失字段逐项回退默认值 */
+export function normalizeWebServerSettings(input: unknown): WebServerSettings {
+  const raw = input && typeof input === 'object' ? input as Partial<WebServerSettings> : {}
+  return {
+    autoStart: typeof raw.autoStart === 'boolean' ? raw.autoStart : DEFAULT_WEB_SERVER_SETTINGS.autoStart,
+    host: typeof raw.host === 'string' && raw.host.length > 0 ? raw.host : DEFAULT_WEB_SERVER_SETTINGS.host,
+    port: typeof raw.port === 'number' && Number.isInteger(raw.port) && raw.port > 0 && raw.port <= 65535
+      ? raw.port
+      : DEFAULT_WEB_SERVER_SETTINGS.port,
+    token: typeof raw.token === 'string' && raw.token.length > 0 ? raw.token : null,
+    requireTokenOnPublic: typeof raw.requireTokenOnPublic === 'boolean'
+      ? raw.requireTokenOnPublic
+      : DEFAULT_WEB_SERVER_SETTINGS.requireTokenOnPublic,
+    requestTimeoutMs: typeof raw.requestTimeoutMs === 'number' && Number.isFinite(raw.requestTimeoutMs) && raw.requestTimeoutMs > 0
+      ? raw.requestTimeoutMs
+      : DEFAULT_WEB_SERVER_SETTINGS.requestTimeoutMs,
+    sseIdleMs: typeof raw.sseIdleMs === 'number' && Number.isFinite(raw.sseIdleMs) && raw.sseIdleMs > 0
+      ? raw.sseIdleMs
+      : DEFAULT_WEB_SERVER_SETTINGS.sseIdleMs,
+  }
+}
+
 /** 提升此版本可要求用户重新确认更新后的受管浏览器风险告知。 */
 export const BROWSER_RISK_DISCLAIMER_VERSION = 1
 
@@ -367,6 +418,8 @@ export interface AppSettings {
   builtinMcpEnabledIds?: string[]
   /** Todo、日程与 Obsidian 的可见性和 Agent 工具注入开关，默认全部开启。 */
   productivityTools: ProductivityToolsSettings
+  /** 内嵌 Web 服务（apps/web-server）设置；默认关闭 autoStart，需手动启动。 */
+  webServer?: WebServerSettings
   /** 启动时自动清理临时文件（proma-preview、proma-installers），默认 true */
   autoCleanupTempOnStart?: boolean
   /** 自动清理 N 天前已归档会话的 SDK 数据（0 = 禁用，默认 0） */
@@ -587,3 +640,49 @@ export const STORAGE_IPC_CHANNELS = {
   /** 仅清理临时文件（启动时/快速清理） */
   CLEANUP_TEMP: 'storage:cleanup-temp',
 } as const
+
+/** Web 服务（apps/web-server）IPC 通道 */
+export const WEB_SERVER_IPC_CHANNELS = {
+  /** 读取当前 WebServerSettings */
+  GET_CONFIG: 'web-server:get-config',
+  /** 更新 WebServerSettings（持久化） */
+  UPDATE_CONFIG: 'web-server:update-config',
+  /** 拉起 web-server 子进程 */
+  START: 'web-server:start',
+  /** 停止 web-server 子进程 */
+  STOP: 'web-server:stop',
+  /** 重启 web-server 子进程 */
+  RESTART: 'web-server:restart',
+  /** 读取当前状态：idle | starting | running | error | stopping */
+  GET_STATUS: 'web-server:get-status',
+  /** 主进程 → 渲染进程：状态/日志推送 */
+  ON_STATUS_CHANGED: 'web-server:status-changed',
+  ON_LOG: 'web-server:log',
+  /** 拉取最近 N 条日志 */
+  GET_LOGS: 'web-server:get-logs',
+} as const
+
+/** Web 服务运行状态 */
+export type WebServerStatus = 'idle' | 'starting' | 'running' | 'error' | 'stopping'
+
+/** Web 服务运行状态详情 */
+export interface WebServerStatusInfo {
+  status: WebServerStatus
+  /** 子进程 PID；运行时存在 */
+  pid?: number
+  /** 当前绑定的 host:port */
+  bindAddress?: string
+  /** 最近一次错误 */
+  error?: string
+  /** 启动时间戳；运行中才有 */
+  startedAt?: number
+  /** 最近一次重启时间戳 */
+  lastChangedAt: number
+}
+
+/** 日志条目（最多保留 500 条环形缓冲） */
+export interface WebServerLogEntry {
+  ts: number
+  stream: 'stdout' | 'stderr' | 'system'
+  message: string
+}

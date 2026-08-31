@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+// vite define 注入的编译期常量
+declare const __PROMA_WEB_MODE__: boolean
+declare const __APP_VERSION__: string
+
 // CSS 模块类型声明
 declare module '*.css' {
   const content: Record<string, string>

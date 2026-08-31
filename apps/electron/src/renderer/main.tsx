@@ -9,6 +9,11 @@
 // 但每个 @font-face 都带 unicode-range，浏览器仅按需下载实际用到的子集（本应用主要是 latin）。
 import '@fontsource-variable/inter/index.css'
 
+// Web 形态 shim：在 Electron 渲染器外部运行时提供 window.electronAPI 替身。
+// 必须在所有 import '@proma/shared' 或访问 window.electronAPI 之前调用。
+import { installWebElectronProxy } from './lib/platform/web-shim'
+installWebElectronProxy()
+
 import React, { useEffect, useMemo, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { useSetAtom, useAtomValue, useStore } from 'jotai'

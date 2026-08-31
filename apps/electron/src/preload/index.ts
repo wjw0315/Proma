@@ -7,7 +7,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS } from '@proma/shared'
-import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
+import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS, WEB_SERVER_IPC_CHANNELS, type WebServerSettings, type WebServerStatusInfo, type WebServerLogEntry } from '../types'
 import type {
   RuntimeStatus,
   GitRepoStatus,
@@ -1217,6 +1217,27 @@ export interface ElectronAPI {
   reportVoiceDictationTranscript: (text: string) => void
   /** 停止语音输入会话 */
   stopVoiceDictation: (input: VoiceDictationStopInput) => Promise<void>
+
+  // ===== 内嵌 Web 服务 =====
+
+  /** 读取 Web 服务设置（apps/web-server） */
+  getWebServerConfig: () => Promise<WebServerSettings>
+  /** 更新 Web 服务设置并持久化到 settings.json */
+  updateWebServerConfig: (updates: Partial<WebServerSettings>) => Promise<WebServerSettings>
+  /** 拉起 web-server 子进程 */
+  startWebServer: () => Promise<{ ok: boolean; reason?: string }>
+  /** 停止 web-server 子进程 */
+  stopWebServer: () => Promise<{ ok: boolean }>
+  /** 重启 web-server 子进程（用于修改 host/port/token 后生效） */
+  restartWebServer: () => Promise<{ ok: boolean; reason?: string }>
+  /** 读取 web-server 当前状态 */
+  getWebServerStatus: () => Promise<WebServerStatusInfo>
+  /** 拉取最近 N 条 web-server 日志 */
+  getWebServerLogs: (limit?: number) => Promise<WebServerLogEntry[]>
+  /** 订阅状态变化推送 */
+  onWebServerStatusChanged: (callback: (info: WebServerStatusInfo) => void) => () => void
+  /** 订阅实时日志流 */
+  onWebServerLog: (callback: (entry: WebServerLogEntry) => void) => () => void
   /** 取消语音输入会话 */
   cancelVoiceDictation: (input: VoiceDictationStopInput) => Promise<void>
   /** 输出最终语音文本 */
@@ -2829,6 +2850,27 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(VOICE_DICTATION_IPC_CHANNELS.STOP, input)
   },
 
+  // ===== 内嵌 Web 服务 =====
+  getWebServerConfig: () => ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.GET_CONFIG),
+  updateWebServerConfig: (updates: Partial<WebServerSettings>) =>
+    ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.UPDATE_CONFIG, updates),
+  startWebServer: () => ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.START),
+  stopWebServer: () => ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.STOP),
+  restartWebServer: () => ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.RESTART),
+  getWebServerStatus: () => ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.GET_STATUS),
+  getWebServerLogs: (limit?: number) =>
+    ipcRenderer.invoke(WEB_SERVER_IPC_CHANNELS.GET_LOGS, limit ?? 200),
+  onWebServerStatusChanged: (callback: (info: WebServerStatusInfo) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, info: WebServerStatusInfo): void => callback(info)
+    ipcRenderer.on(WEB_SERVER_IPC_CHANNELS.ON_STATUS_CHANGED, listener)
+    return () => ipcRenderer.removeListener(WEB_SERVER_IPC_CHANNELS.ON_STATUS_CHANGED, listener)
+  },
+  onWebServerLog: (callback: (entry: WebServerLogEntry) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, entry: WebServerLogEntry): void => callback(entry)
+    ipcRenderer.on(WEB_SERVER_IPC_CHANNELS.ON_LOG, listener)
+    return () => ipcRenderer.removeListener(WEB_SERVER_IPC_CHANNELS.ON_LOG, listener)
+  },
+
   cancelVoiceDictation: (input: VoiceDictationStopInput) => {
     return ipcRenderer.invoke(VOICE_DICTATION_IPC_CHANNELS.CANCEL, input)
   },
@@ -3028,9 +3070,60 @@ const electronAPI: ElectronAPI = {
 // 将 API 暴露到渲染进程的 window 对象上
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
 
+// 平台抽象层：把现有 electronAPI 包装成 PlatformAPI 形态，供 renderer 渐进迁移。
+// Step 1 阶段：仅暴露兼容层；Step 4 之后 renderer 可改用 window.promaPlatformAPI。
+// 此处保持与 platforms/web-bridge.ts 的契约一致：request/subscribe/openStream + capabilities。
+import type {
+  PlatformAPI,
+  PlatformRequest,
+  PlatformSubscribe,
+} from '@proma/platform-ipc'
+
+const electronCapabilities = {
+  hasTray: true,
+  hasNativeMenu: true,
+  hasEventKit: true,
+  hasAutoUpdate: true,
+  hasShellOpen: true,
+  hasFileDialog: true,
+  hasPty: true,
+}
+
+const platformRequest: PlatformRequest = <TResponse = unknown>(
+  channel: string,
+  args?: unknown,
+): Promise<TResponse> => ipcRenderer.invoke(channel, args) as Promise<TResponse>
+
+const platformSubscribe: PlatformSubscribe = <TEvent = unknown>(
+  channel: string,
+  handler: (event: TEvent) => void,
+): (() => void) => {
+  const listener = (_event: Electron.IpcRendererEvent, payload: TEvent): void =>
+    handler(payload)
+  ipcRenderer.on(channel, listener)
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+}
+
+const electronPlatformAPI: PlatformAPI = {
+  kind: 'electron',
+  capabilities: electronCapabilities,
+  request: platformRequest,
+  subscribe: platformSubscribe,
+  // openStream 在 Step 3 实现：复用现有 createTerminal / writeTerminal / killTerminal
+  // 以及 ACK_OUTPUT 推送通道。等 Step 3 拿到准确的推送 channel 名后再补。
+  openStream: () => {
+    throw new Error('Electron openStream 尚未在 Step 1 实现；请走 electronAPI.createTerminal + onTerminalOutput。')
+  },
+}
+
+contextBridge.exposeInMainWorld('promaPlatformAPI', electronPlatformAPI)
+
 // 扩展 Window 接口的类型定义
 declare global {
   interface Window {
     electronAPI: ElectronAPI
+    promaPlatformAPI: PlatformAPI
   }
 }

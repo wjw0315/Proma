@@ -42,6 +42,7 @@ import type {
   ChatMessage,
   ChatSendInput,
   GenerateTitleInput,
+  StreamSink,
   AttachmentSaveInput,
   AttachmentSaveResult,
   FileDialogResult,
@@ -1844,11 +1845,16 @@ export function registerIpcHandlers(): void {
   )
 
   // 发送消息（触发 AI 流式响应）
-  // 注意：通过 event.sender 获取 webContents 用于推送流式事件
+  // 注意：包 event.sender 为 StreamSink（webContents.send 的最小适配器），让 chat-service 与运行平台解耦
   ipcMain.handle(
     CHAT_IPC_CHANNELS.SEND_MESSAGE,
     async (event, input: ChatSendInput): Promise<boolean> => {
-      return sendMessage(input, event.sender)
+      const sink: StreamSink = {
+        send: (channel, payload) => {
+          event.sender.send(channel, payload)
+        },
+      }
+      return sendMessage(input, sink)
     }
   )
 

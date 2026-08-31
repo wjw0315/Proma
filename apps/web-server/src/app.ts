@@ -6,6 +6,7 @@
  *   POST /api/ipc       单次 request/response
  *   GET  /api/events    SSE 订阅
  *   WS   /api/pty/:id   终端双向流（Step 3 接入）
+ *   GET  /*             静态资源（PROMA_WEB_STATIC_DIR 配置时启用，SPA fallback 到 index.html）
  */
 
 import { Hono } from 'hono'
@@ -16,12 +17,71 @@ import { webEventBus } from './event-bus'
 import { dispatch, isRegistered } from './ipc-router'
 import { newTraceId, type WebServerContext } from './context'
 
+/** 静态托管的根目录；未配置（或目录不存在）时 web-server 仅提供 API。 */
+const STATIC_ROOT = process.env.PROMA_WEB_STATIC_DIR ?? ''
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+}
+
+/**
+ * 解析静态文件请求（含路径穿越防护与 SPA fallback）。
+ * 返回 null 表示静态托管未启用或文件不存在（走 Hono 默认 404）。
+ */
+async function serveStaticFile(pathname: string): Promise<Response | null> {
+  if (!STATIC_ROOT) return null
+  const decoded = decodeURIComponent(pathname)
+  const relative = decoded.replace(/^\/+/, '')
+  if (relative.includes('..') || relative.includes('\\')) return null
+  let candidate = `${STATIC_ROOT.replace(/\/+$/, '')}/${relative || 'index.html'}`
+  let file = Bun.file(candidate)
+  if (!(await file.exists())) {
+    // SPA fallback：非 API 路径且无扩展名的，回 index.html（renderer 用 hash/相对路由）
+    const hasExt = /\.[a-zA-Z0-9]+$/.test(relative)
+    if (hasExt) return null
+    candidate = `${STATIC_ROOT.replace(/\/+$/, '')}/index.html`
+    file = Bun.file(candidate)
+    if (!(await file.exists())) return null
+  }
+  const ext = candidate.slice(candidate.lastIndexOf('.'))
+  return new Response(file, {
+    headers: {
+      'Content-Type': MIME_BY_EXT[ext] ?? 'application/octet-stream',
+      // 带 hash 的 Vite 产物可长缓存；index.html 不缓存避免发版后白屏
+      'Cache-Control': candidate.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
+    },
+  })
+}
+
 export function createApp(config: WebServerConfig): Hono {
   const app = new Hono()
 
   app.use('*', createAuthMiddleware(config))
 
   app.get('/health', (c) => c.json({ ok: true, kind: 'web', ts: Date.now() }))
+
+  // 静态托管（鉴权之后，走 ?token= / Bearer）。命中失败则落到 Hono 默认 404。
+  app.get('*', async (c) => {
+    const res = await serveStaticFile(c.req.path)
+    return res ?? c.text('Not Found', 404)
+  })
 
   app.post('/api/ipc', async (c) => {
     const body = await c.req.json().catch(() => null) as

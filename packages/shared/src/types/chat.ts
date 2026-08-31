@@ -243,6 +243,19 @@ export interface GenerateTitleInput {
 // ===== 流式事件载荷 =====
 
 /**
+ * 流式事件订阅目标抽象。
+ *
+ * Electron 主进程侧由 ipc.ts 把 webContents.send 包装成 sink；
+ * web-server 形态下由 chat-channels.ts 把 event-bus.publish 包装成 sink。
+ * 业务层（chat-service / chat-tool-executor）只依赖这个接口，
+ * 与运行平台解耦。
+ */
+export interface StreamSink {
+  /** 推送一个 IPC 通道事件。channel 通常是 STREAM_* 常量之一。 */
+  send(channel: string, payload: unknown): void
+}
+
+/**
  * 流式内容片段事件
  */
 export interface StreamChunkEvent {
