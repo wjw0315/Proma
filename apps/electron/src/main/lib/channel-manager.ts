@@ -11,10 +11,22 @@ import { readFileSync, existsSync } from 'node:fs'
 // 静态依赖闭包，web-server（Bun）复用本模块的只读函数（如 getChannelById）时会失败。
 import type { SafeStorage } from 'electron'
 function loadSafeStorage(): SafeStorage {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { safeStorage } = require('electron') as { safeStorage: SafeStorage }
-  return safeStorage
+  let safeStorage: SafeStorage | undefined
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    safeStorage = (require('electron') as { safeStorage?: SafeStorage }).safeStorage
+  } catch {
+    safeStorage = undefined
+  }
+  // Bun 环境（web-server）没有 electron runtime：node_modules/electron 的
+  // index.js 在 require 成功但不导出 safeStorage；统一降级为“加密不可用”，
+  // 调用方（encryptApiKey/decryptKey）已有明文降级路径。
+  return safeStorage ?? unavailableSafeStorage
 }
+/** Bun 环境下的 safeStorage 降级实现：加密不可用，触发调用方的明文路径。 */
+const unavailableSafeStorage: SafeStorage = {
+  isEncryptionAvailable: () => false,
+} as SafeStorage
 import { randomUUID } from 'node:crypto'
 import { getChannelsPath } from './config-paths'
 import type {

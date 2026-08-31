@@ -24,6 +24,7 @@ import {
 } from '../../electron/src/main/lib/settings-service'
 import { registerPlanningAutomationDomains } from './domains/planning-automation'
 import { registerAgentSessionsDomain } from './domains/agent-sessions'
+import { registerChatAndChannelsDomains } from './domains/chat-channels'
 
 export type IpcHandler<TArgs = unknown, TResult = unknown> = (
   args: TArgs,
@@ -127,9 +128,7 @@ register('settings:update', async (args) => {
   }
   return updateSettingsFromLib(updates as Parameters<typeof updateSettingsFromLib>[0])
 })
-register('channels:list', async () => [])
 // agent 会话/工作区只读 domain 由 domains/agent-sessions.ts 接入真实业务（往下注册）
-register('chat:list-conversations', async () => [])
 register('scratch-pad:load', async () => null)
 // planning / automation domain 由 domains/planning-automation.ts 接入真实业务（往下 register 调用）
 register('chat-tool:list', async () => [])
@@ -236,3 +235,7 @@ registerPlanningAutomationDomains(register)
 // —— agent 会话/工作区 domain（只读）：接主进程 lib 真实业务 ——
 // 读取同一份 ~/.proma-agent-workspaces/ 索引与 SDK 消息。
 registerAgentSessionsDomain(register)
+
+// —— chat 会话 + channels domain：接主进程 lib 真实业务 ——
+// 对话索引/消息（JSON）+ 渠道列表（apiKey 保持加密态）。
+registerChatAndChannelsDomains(register)
