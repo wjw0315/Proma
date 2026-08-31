@@ -7,7 +7,14 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs'
-import { safeStorage } from 'electron'
+// safeStorage 延迟加载：只在加密/解密路径使用；顶层 import 会把 electron 拉进
+// 静态依赖闭包，web-server（Bun）复用本模块的只读函数（如 getChannelById）时会失败。
+import type { SafeStorage } from 'electron'
+function loadSafeStorage(): SafeStorage {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { safeStorage } = require('electron') as { safeStorage: SafeStorage }
+  return safeStorage
+}
 import { randomUUID } from 'node:crypto'
 import { getChannelsPath } from './config-paths'
 import type {
@@ -367,12 +374,12 @@ function writeConfig(config: ChannelsConfig): void {
  * @returns base64 编码的加密字符串
  */
 function encryptApiKey(plainKey: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!loadSafeStorage().isEncryptionAvailable()) {
     console.warn('[渠道管理] safeStorage 加密不可用，将以明文存储')
     return plainKey
   }
 
-  const encrypted = safeStorage.encryptString(plainKey)
+  const encrypted = loadSafeStorage().encryptString(plainKey)
   return encrypted.toString('base64')
 }
 
@@ -383,14 +390,14 @@ function encryptApiKey(plainKey: string): string {
  * @returns 明文 API Key
  */
 function decryptKey(encryptedKey: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!loadSafeStorage().isEncryptionAvailable()) {
     // 如果加密不可用，假设存储的是明文
     return encryptedKey
   }
 
   try {
     const buffer = Buffer.from(encryptedKey, 'base64')
-    return safeStorage.decryptString(buffer)
+    return loadSafeStorage().decryptString(buffer)
   } catch (error) {
     console.error('[渠道管理] 解密 API Key 失败:', error)
     throw new Error('解密 API Key 失败')

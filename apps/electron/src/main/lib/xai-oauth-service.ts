@@ -6,7 +6,13 @@
  * Channel.apiKey + Electron safeStorage 加密持久化；本服务绝不写入 ~/.pi。
  */
 
-import { shell } from 'electron'
+// shell 延迟加载：web-server（Bun）复用 channel-manager 时不应拉起 electron。
+import type { Shell } from 'electron'
+function loadShell(): Shell {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { shell } = require('electron') as { shell: Shell }
+  return shell
+}
 import type { XaiOAuthCredentials, XaiOAuthDeviceCode } from '@proma/shared'
 import { runWithOAuthProxyScope } from './oauth-proxy-scope'
 
@@ -90,7 +96,7 @@ export async function loginXaiOAuth(callbacks?: XaiLoginCallbacks): Promise<XaiO
           if (event.type === 'device_code') {
             console.log(`[xAI OAuth] 请在浏览器中授权（设备码：${event.userCode}）`)
             callbacks?.onDeviceCode?.({ userCode: event.userCode, verificationUri: event.verificationUri })
-            shell.openExternal(event.verificationUri).catch((error) => {
+            loadShell().openExternal(event.verificationUri).catch((error) => {
               console.error('[xAI OAuth] 打开授权页面失败:', error)
             })
           } else if (event.type === 'progress' || event.type === 'info') {

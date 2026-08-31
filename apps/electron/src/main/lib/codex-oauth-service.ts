@@ -11,7 +11,13 @@
  * 本服务只封装"跑一次登录流程""刷新一次 token"两个纯操作。
  */
 
-import { shell } from 'electron'
+// shell 延迟加载：web-server（Bun）复用 channel-manager 时不应拉起 electron。
+import type { Shell } from 'electron'
+function loadShell(): Shell {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { shell } = require('electron') as { shell: Shell }
+  return shell
+}
 import type { CodexOAuthCredentials, CodexOAuthDeviceCode, CodexOAuthLoginMethod } from '@proma/shared'
 import { runWithOAuthProxyScope } from './oauth-proxy-scope'
 /** Pi 0.80.10 将 OAuth 流程收敛到 ModelRuntime。保持动态 import，避免 Electron 主包将 Pi runtime 内联。 */
@@ -114,11 +120,11 @@ export async function loginCodexOAuth(options?: CodexLoginOptions): Promise<Code
         notify: (event) => {
           if (event.type === 'auth_url') {
             options?.onAuthUrl?.(event.url)
-            shell.openExternal(event.url).catch((err) => console.error('[Codex OAuth] 打开浏览器失败:', err))
+            loadShell().openExternal(event.url).catch((err) => console.error('[Codex OAuth] 打开浏览器失败:', err))
           } else if (event.type === 'device_code') {
             console.log(`[Codex OAuth] 请在浏览器中授权（设备码：${event.userCode}）`)
             options?.onDeviceCode?.({ userCode: event.userCode, verificationUri: event.verificationUri })
-            shell.openExternal(event.verificationUri).catch((err) => console.error('[Codex OAuth] 打开设备授权页面失败:', err))
+            loadShell().openExternal(event.verificationUri).catch((err) => console.error('[Codex OAuth] 打开设备授权页面失败:', err))
           } else if (event.type === 'progress' || event.type === 'info') {
             console.log(`[Codex OAuth] ${event.message}`)
             options?.onProgress?.(event.message)
