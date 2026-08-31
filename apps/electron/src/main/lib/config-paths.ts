@@ -45,10 +45,23 @@ export function getConfigDirName(): string {
 /**
  * 获取配置目录路径
  *
- * 开发模式返回 ~/.proma-dev/，正式版本返回 ~/.proma/。
+ * 优先级：
+ * 1. PROMA_CONFIG_DIR 环境变量（显式覆盖；Electron spawn web-server 子进程 / 测试隔离用）
+ * 2. 开发模式 ~/.proma-dev/，正式版本 ~/.proma/
+ *
  * 如果目录不存在则自动创建。
  */
 export function getConfigDir(): string {
+  // 环境变量显式覆盖：Electron 主进程 spawn web-server 时注入，
+ // 保证子进程读写同一份配置；测试也用它隔离真实用户目录。
+  const override = process.env.PROMA_CONFIG_DIR
+  if (override) {
+    if (!existsSync(override)) {
+      mkdirSync(override, { recursive: true })
+    }
+    return override
+  }
+
   const configDir = join(homedir(), getConfigDirName())
 
   if (!existsSync(configDir)) {
