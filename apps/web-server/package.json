@@ -1,0 +1,26 @@
+{
+  "name": "@proma/web-server",
+  "version": "0.1.6",
+  "license": "AGPL-3.0-only",
+  "description": "Proma web-server: Bun + Hono, exposes main-process IPC over HTTP/SSE/WS for the browser renderer",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun run ../../apps/electron/scripts/build-web-server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@proma/platform-ipc": "workspace:*",
+    "@proma/shared": "workspace:*",
+    "hono": "^4.6.0",
+    "ws": "8.19.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.0.0"
+  }
+}

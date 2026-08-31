@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.6",
+  "version": "0.19.8",
   "description": "Proma，为专业用户设计的 Agent - Electron App",
   "main": "dist/main.cjs",
   "author": {
@@ -25,14 +25,16 @@
     "watch:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron --watch=forever",
     "build:renderer": "vite build",
     "build:resources": "cp -r resources dist/ 2>/dev/null || true",
+    "build:web-server": "bun run scripts/build-web-server.ts",
     "build:agent-island-native": "bun run scripts/build-agent-island-native.ts",
     "build:eventkit-native": "bun run scripts/build-eventkit-native.ts",
     "build:native-helpers": "bun run build:agent-island-native && bun run build:eventkit-native",
     "build:cli": "bun run scripts/build-cli.ts",
+    "prepare:bun": "bun run scripts/prepare-bun.ts",
     "prepare:officecli": "bun run scripts/prepare-officecli.ts",
     "sync:runtime-deps": "bun run scripts/sync-runtime-deps.ts",
     "sync:runtime-deps:dev": "bun run scripts/sync-runtime-deps.ts --no-clean",
-    "build": "bun run prepare:officecli && bun run build:main && bun run build:agent-runtime && bun run build:terminal-runtime && bun run build:preload && bun run build:renderer && bun run build:cli && bun run build:native-helpers && bun run build:resources",
+    "build": "bun run build:web-server && bun run prepare:officecli && bun run prepare:bun && bun run build:main && bun run build:agent-runtime && bun run build:terminal-runtime && bun run build:preload && bun run build:renderer && bun run build:cli && bun run build:native-helpers && bun run build:resources",
     "rebuild:node-pty": "electron-rebuild -f -w node-pty && bun run ensure:node-pty-helper",
     "ensure:node-pty-helper": "bun run scripts/ensure-node-pty-helper-executable.ts",
     "start": "bun run build && bunx electron .",
@@ -182,5 +184,9 @@
   "build": {
     "extends": "electron-builder.yml"
   },
-  "proma": {}
+  "proma": {
+    "bun": {
+      "version": "1.3.14"
+    }
+  }
 }
