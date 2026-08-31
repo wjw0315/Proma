@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
+    "build:cli": "bun run scripts/build-cli.ts",
     "build": "bun run ../../apps/electron/scripts/build-web-server.ts",
     "typecheck": "tsc --noEmit"
   },

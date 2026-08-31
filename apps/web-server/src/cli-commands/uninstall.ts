@@ -48,6 +48,16 @@ export async function runUninstall(options: UninstallOptions = {}): Promise<Unin
         if (!options.dryRun) await removeIfExists(PATHS.systemdUnit)
         removed.push(PATHS.systemdUnit)
       }
+      // 同时清理 logrotate 配置 + 备份
+      if (existsSync(PATHS.systemdLogrotate)) {
+        if (!options.dryRun) await removeIfExists(PATHS.systemdLogrotate)
+        removed.push(PATHS.systemdLogrotate)
+      }
+      const unitBak = `${PATHS.systemdUnit}.pre-proma-web.bak`
+      if (existsSync(unitBak)) {
+        if (!options.dryRun) await removeIfExists(unitBak)
+        removed.push(unitBak)
+      }
       return { platform, notes, removed }
     }
     case 'darwin': {
@@ -71,6 +81,11 @@ export async function runUninstall(options: UninstallOptions = {}): Promise<Unin
       if (existsSync(bak)) {
         if (!options.dryRun) await removeIfExists(bak)
         removed.push(bak)
+      }
+      // 同时清理 newsyslog 配置
+      if (existsSync(PATHS.newsyslogConf)) {
+        if (!options.dryRun) await removeIfExists(PATHS.newsyslogConf)
+        removed.push(PATHS.newsyslogConf)
       }
       return { platform, notes, removed }
     }

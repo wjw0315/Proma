@@ -10,6 +10,8 @@ import { PATHS } from '../cli-paths'
 
 import { runCommand, writeFileWithBackup } from '../daemon'
 import { LAUNCHD_LABEL, renderLaunchdPlist } from '../daemon/launchd'
+import { renderLogrotateConfig } from '../daemon/logrotate'
+import { renderNewsyslogConfig } from '../daemon/newsyslog'
 import { SYSTEMD_UNIT_FILENAME, renderSystemdUnit } from '../daemon/systemd'
 import { buildWindowsInstallCommands, buildWindowsInstallPlan, detectElevation } from '../daemon/windows-service'
 
@@ -63,6 +65,12 @@ export async function runInstall(options: InstallOptions = {}): Promise<InstallR
       else {
         notes.push('dryRun：未触发 systemctl reload / enable')
       }
+
+      // logrotate 配置：用户级目录，无需 root
+      const logrotate = renderLogrotateConfig({ home: homedir() })
+      writeFileWithBackup(PATHS.systemdLogrotate, logrotate)
+      notes.push(`已写入 logrotate 配置：${PATHS.systemdLogrotate}`)
+
       return { platform, notes, backupPath: bakPath, commands }
     }
     case 'darwin': {
@@ -96,6 +104,12 @@ export async function runInstall(options: InstallOptions = {}): Promise<InstallR
       else {
         notes.push('dryRun：未触发 launchctl bootstrap / kickstart')
       }
+
+      // newsyslog 配置：用户级目录
+      const newsyslog = renderNewsyslogConfig({ home: homedir() })
+      writeFileWithBackup(PATHS.newsyslogConf, newsyslog)
+      notes.push(`已写入 newsyslog 配置：${PATHS.newsyslogConf}`)
+
       return { platform, notes, backupPath: bakPath, commands }
     }
     case 'win32': {
