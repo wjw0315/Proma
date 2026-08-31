@@ -79,3 +79,48 @@ describe('web-server agent sessions domain（只读）', () => {
     expect(body.error.message).toContain('不存在')
   })
 })
+
+describe('web-server agent 会话写操作', () => {
+  test('create / update-title / toggle-pin / toggle-archive / delete 闭环', async () => {
+    // 创建
+    const created = await ipc<{ id: string; title: string }>('agent:create-session', ['写操作测试'])
+    expect(created.title).toBe('写操作测试')
+
+    // 列表可见
+    const list = await ipc<{ id: string }[]>('agent:list-sessions')
+    expect(list.some((s) => s.id === created.id)).toBe(true)
+
+    // 改名
+    const renamed = await ipc<{ title: string }>('agent:update-title', [created.id, '改名会话'])
+    expect(renamed.title).toBe('改名会话')
+
+    // pin / archive 切换
+    const pinned = await ipc<{ pinned: boolean }>('agent:toggle-pin', [created.id])
+    expect(pinned.pinned).toBe(true)
+    const archived = await ipc<{ archived: boolean }>('agent:toggle-archive', [created.id])
+    expect(archived.archived).toBe(true)
+
+    // 删除
+    await ipc('agent:delete-session', [created.id])
+    const after = await ipc<{ id: string }[]>('agent:list-sessions')
+    expect(after.some((s) => s.id === created.id)).toBe(false)
+  })
+
+  test('create-session 拒绝非 boolean isDraft', async () => {
+    const res = await ipcRaw('agent:create-session', ['x', undefined, undefined, undefined, 'yes'])
+    expect(res.status).toBe(500)
+  })
+
+  test('toggle-pin 拒绝不存在的会话', async () => {
+    const res = await ipcRaw('agent:toggle-pin', ['no-such-id'])
+    expect(res.status).toBe(500)
+  })
+
+  test('update-session-model 更新 channel/model', async () => {
+    const created = await ipc<{ id: string }>('agent:create-session', ['模型测试'])
+    const updated = await ipc<{ channelId?: string; modelId?: string }>('agent:update-session-model', [created.id, 'ch-1', 'model-x'])
+    expect(updated.channelId).toBe('ch-1')
+    expect(updated.modelId).toBe('model-x')
+    await ipc('agent:delete-session', [created.id])
+  })
+})

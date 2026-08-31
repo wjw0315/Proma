@@ -16,6 +16,9 @@ import {
   listActiveAgentSessions as libListActive,
   listArchivedAgentSessions as libListArchived,
   getAgentSessionSDKMessages,
+  createAgentSession as libCreateSession,
+  updateAgentSessionMeta as libUpdateMeta,
+  deleteAgentSession as libDeleteSession,
 } from '../../../electron/src/main/lib/agent-session-manager'
 import {
   listAgentWorkspaces as libListWorkspaces,
@@ -39,6 +42,55 @@ export function registerAgentSessionsDomain(register: <TArgs, TResult>(channel: 
     if (typeof id !== 'string' || !id.trim()) throw new Error('sessionId 必填')
     // 仅读取已落盘 SDK 消息；不触达运行态
     return getAgentSessionSDKMessages(id)
+  })
+
+  // ===== 会话写操作（JSONL 索引；不含 Agent 运行时启动） =====
+  register('agent:create-session', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    const [title, channelId, workspaceId, modelId, isDraft] = a
+    if (isDraft !== undefined && typeof isDraft !== 'boolean') throw new Error('Agent 草稿状态非法')
+    // 与主进程 CREATE_SESSION 对齐：feishuMirror 等副作用不在此重复
+    return libCreateSession(
+      typeof title === 'string' ? title : undefined,
+      typeof channelId === 'string' ? channelId : undefined,
+      typeof workspaceId === 'string' ? workspaceId : undefined,
+      typeof modelId === 'string' ? modelId : undefined,
+      undefined,
+      undefined,
+      isDraft,
+    )
+  })
+  register('agent:update-title', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    const id = a[0], title = a[1]
+    if (typeof id !== 'string' || !id.trim()) throw new Error('id 必填')
+    if (typeof title !== 'string' || !title.trim()) throw new Error('title 必填')
+    return libUpdateMeta(id, { title })
+  })
+  register('agent:update-session-model', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    const id = a[0], channelId = a[1], modelId = a[2]
+    if (typeof id !== 'string' || !id.trim()) throw new Error('id 必填')
+    return libUpdateMeta(id, {
+      ...(typeof channelId === 'string' ? { channelId } : {}),
+      ...(typeof modelId === 'string' ? { modelId } : {}),
+    })
+  })
+  const toggleField = (field: 'pinned' | 'starred' | 'archived') => (args: unknown) => {
+    const id = Array.isArray(args) ? args[0] : args
+    if (typeof id !== 'string' || !id.trim()) throw new Error('id 必填')
+    const current = libListSessions().find((s) => s.id === id)
+    if (!current) throw new Error(`Agent 会话不存在: ${id}`)
+    return libUpdateMeta(id, { [field]: !current[field] })
+  }
+  register('agent:toggle-pin', toggleField('pinned'))
+  register('agent:toggle-star', toggleField('starred'))
+  register('agent:toggle-archive', toggleField('archived'))
+  register('agent:delete-session', (args) => {
+    const id = Array.isArray(args) ? args[0] : args
+    if (typeof id !== 'string' || !id.trim()) throw new Error('id 必填')
+    libDeleteSession(id)
+    return { ok: true }
   })
 
   // ===== 工作区能力（读 skills/mcp 配置；无 Electron 副作用） =====
