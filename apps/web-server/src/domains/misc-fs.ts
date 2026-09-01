@@ -6,6 +6,7 @@
  */
 
 import type { IpcHandler } from '../ipc-router'
+import { PlatformUnsupportedError } from '@proma/platform-ipc'
 import { getScratchPadPath } from '../../../electron/src/main/lib/config-paths'
 import {
   getUserProfile as libGetUserProfile,
@@ -123,5 +124,17 @@ export function registerMiscDomains(register: <TArgs, TResult>(channel: string, 
   register('chat-tool:delete-custom', (args) => {
     deleteCustomTool(requireString(arg(args, 0), 'toolId'))
     return { ok: true }
+  })
+
+  // ===== chat-tool:test 降级 =====
+  // 主进程 ipc.ts TEST_TOOL handler 中联了多套（web-search Tavily / nano-banana Gemini 等）
+  // 联网验证逻辑；未抽出为独立 lib 函数。Bun 环境可直接 fetch，但代码重复代价大于收益，
+  // 这里显式拋 PlatformUnsupportedError，让 UI 拿到明确降级而非 web-shim 的默认占位 (null)。
+  // 后续如需在 Web 形态下走测试，可从 ipc.ts 抽 testChatTool(toolId) 供 web-server 复用。
+  register('chat-tool:test', () => {
+    throw new PlatformUnsupportedError(
+      'chat-tool:test',
+      'Web 形态不支持 chat-tool:test；需发起网络请求验证（Tavily/Gemini/...），未在 web-server 抽象。',
+    )
   })
 }

@@ -22,8 +22,37 @@ import {
 } from '../../../electron/src/main/lib/agent-session-manager'
 import {
   listAgentWorkspaces as libListWorkspaces,
+  getAgentWorkspace as libGetAgentWorkspace,
   getAgentWorkspaceBySlug,
+  getWorkspaceMcpConfig as libGetWorkspaceMcpConfig,
+  saveWorkspaceMcpConfig as libSaveWorkspaceMcpConfig,
+  listSkillFiles as libListSkillFiles,
+  readSkillFile as libReadSkillFile,
+  writeSkillFile as libWriteSkillFile,
+  createSkillEntry as libCreateSkillEntry,
+  deleteSkillEntry as libDeleteSkillEntry,
+  renameSkillEntry as libRenameSkillEntry,
+  deleteWorkspaceSkill as libDeleteWorkspaceSkill,
+  toggleWorkspaceSkill as libToggleWorkspaceSkill,
+  getWorkspaceMemorySummary as libGetWorkspaceMemorySummary,
+  readWorkspaceAgentsMd as libReadWorkspaceAgentsMd,
+  writeWorkspaceAgentsMd as libWriteWorkspaceAgentsMd,
+  listWorkspaceAutoMemoryFiles as libListWorkspaceAutoMemoryFiles,
+  readWorkspaceAutoMemoryFile as libReadWorkspaceAutoMemoryFile,
+  writeWorkspaceAutoMemoryFile as libWriteWorkspaceAutoMemoryFile,
 } from '../../../electron/src/main/lib/agent-workspace-manager'
+import { PlatformUnsupportedError } from '@proma/platform-ipc'
+import { getAgentSessionWorkspacePath } from '../../../electron/src/main/lib/config-paths'
+
+/** 从 web-shim 的 args（位置参数数组或单值）取第 n 个参数。 */
+function arg(args: unknown, n: number): unknown {
+  return Array.isArray(args) ? args[n] : (n === 0 ? args : undefined)
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} 必填`)
+  return value
+}
 
 /** 注册 agent 会话/工作区只读通道。 */
 export function registerAgentSessionsDomain(register: <TArgs, TResult>(channel: string, handler: IpcHandler<TArgs, TResult>) => void): void {
@@ -110,4 +139,163 @@ export function registerAgentSessionsDomain(register: <TArgs, TResult>(channel: 
       },
     }
   })
+
+  // ===== Agent 会话工作路径（右侧 SidePanel 依赖） =====
+  // 与主进程 ipc.ts GET_SESSION_PATH handler 对齐：
+  // workspaceId 查不到 workspace 时返回 null（与主进程一致）；
+  // 否则返回 ~/.proma/agent-workspaces/{slug}/{sessionId}/ 并确保目录存在。
+  register('agent:get-session-path', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    const workspaceId = a[0]
+    const sessionId = a[1]
+    if (typeof workspaceId !== 'string' || !workspaceId.trim()) throw new Error('workspaceId 必填')
+    if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('sessionId 必填')
+    const ws = libGetAgentWorkspace(workspaceId)
+    if (!ws) return null
+    return getAgentSessionWorkspacePath(ws.slug, sessionId)
+  })
+
+  // ===== Skills CRUD（纯 fs；agent-workspace-manager.ts 零 Electron 依赖）=====
+  // arity 2 / 3 / 4：参数是 (workspaceSlug, skillSlug[, relativePath[, content]])
+  register('agent:list-skill-files', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libListSkillFiles(requireString(a[0], 'workspaceSlug'), requireString(a[1], 'skillSlug'))
+  })
+  register('agent:read-skill-file', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libReadSkillFile(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      requireString(a[2], 'relativePath'),
+    )
+  })
+  register('agent:write-skill-file', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libWriteSkillFile(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      requireString(a[2], 'relativePath'),
+      requireString(a[3], 'content'),
+    )
+    return { ok: true }
+  })
+  register('agent:create-skill-entry', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libCreateSkillEntry(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      requireString(a[2], 'relativePath'),
+      a[3] === 'directory' ? 'directory' : 'file',
+    )
+    return { ok: true }
+  })
+  register('agent:delete-skill-entry', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libDeleteSkillEntry(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      requireString(a[2], 'relativePath'),
+    )
+    return { ok: true }
+  })
+  register('agent:rename-skill-entry', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libRenameSkillEntry(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      requireString(a[2], 'fromRelative'),
+      requireString(a[3], 'toRelative'),
+    )
+    return { ok: true }
+  })
+  register('agent:delete-workspace-skill', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libDeleteWorkspaceSkill(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+    )
+    return { ok: true }
+  })
+  register('agent:toggle-workspace-skill', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libToggleWorkspaceSkill(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'skillSlug'),
+      typeof a[2] === 'boolean' ? a[2] : true,
+    )
+    return { ok: true }
+  })
+
+  // ===== MCP 配置读写（纯 fs；运行时验证/启用需在桌面端）=====
+  register('agent:get-mcp-config', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libGetWorkspaceMcpConfig(requireString(a[0], 'workspaceSlug'))
+  })
+  register('agent:save-mcp-config', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    const slug = requireString(a[0], 'workspaceSlug')
+    const config = a[1]
+    if (!config || typeof config !== 'object') throw new Error('save-mcp-config 需要 WorkspaceMcpConfig 对象')
+    // Web 形态简化：直接持久化，跳过主进程的 validateAndConditionallyPersistMcp
+    // （网络验证 + refresh generation + pending validation 状态）。
+    // 用户在 Web 端保存后，需在桌面端重新启用（set-mcp-enabled-and-validate）才能生效。
+    libSaveWorkspaceMcpConfig(slug, config as Parameters<typeof libSaveWorkspaceMcpConfig>[1])
+    return { ok: true }
+  })
+
+  // ===== 工作区记忆文件（agents.md / auto-memory）=====
+  register('agent:get-workspace-memory-summary', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libGetWorkspaceMemorySummary(requireString(a[0], 'workspaceSlug'))
+  })
+  register('agent:read-workspace-agents-md', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libReadWorkspaceAgentsMd(requireString(a[0], 'workspaceSlug'))
+  })
+  register('agent:write-workspace-agents-md', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libWriteWorkspaceAgentsMd(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'content'),
+    )
+    return { ok: true }
+  })
+  register('agent:list-workspace-auto-memory-files', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libListWorkspaceAutoMemoryFiles(requireString(a[0], 'workspaceSlug'))
+  })
+  register('agent:read-workspace-auto-memory-file', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    return libReadWorkspaceAutoMemoryFile(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'filename'),
+    )
+  })
+  register('agent:write-workspace-auto-memory-file', (args) => {
+    const a = Array.isArray(args) ? args : [args]
+    libWriteWorkspaceAutoMemoryFile(
+      requireString(a[0], 'workspaceSlug'),
+      requireString(a[1], 'filename'),
+      requireString(a[2], 'content'),
+    )
+    return { ok: true }
+  })
+
+  // ===== MCP runtime / 凭据 / OAuth：Web 形态降级 =====
+  // 涉及网络测试、runtime 验证、safeStorage 凭据、浏览器回调。
+  // 用户需在桌面端操作。
+  const mcpRuntimeUnsupported = (channelName: string) => () => {
+    throw new PlatformUnsupportedError(
+      channelName,
+      `Web 形态不支持 ${channelName}；MCP 运行时验证/凭据/OAuth 需桌面端。`,
+    )
+  }
+  register('agent:test-mcp-server', mcpRuntimeUnsupported('agent:test-mcp-server'))
+  register('agent:set-mcp-enabled-and-validate', mcpRuntimeUnsupported('agent:set-mcp-enabled-and-validate'))
+  register('agent:install-mcp-and-validate', mcpRuntimeUnsupported('agent:install-mcp-and-validate'))
+  register('agent:set-builtin-mcp-enabled', mcpRuntimeUnsupported('agent:set-builtin-mcp-enabled'))
+  register('agent:save-mcp-api-key', mcpRuntimeUnsupported('agent:save-mcp-api-key'))
+  register('agent:delete-mcp-credential', mcpRuntimeUnsupported('agent:delete-mcp-credential'))
+  register('agent:start-mcp-oauth', mcpRuntimeUnsupported('agent:start-mcp-oauth'))
+  register('agent:refresh-mcp-connections', mcpRuntimeUnsupported('agent:refresh-mcp-connections'))
 }

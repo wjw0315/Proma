@@ -27,6 +27,8 @@ import { registerAgentSessionsDomain } from './domains/agent-sessions'
 import { registerChatAndChannelsDomains } from './domains/chat-channels'
 import { registerMiscDomains } from './domains/misc-fs'
 import { registerGitDomain } from './domains/git'
+import { registerSystemSettingsDomains } from './domains/system-settings'
+import { registerBotBridgeDomains } from './domains/bot-bridges'
 
 export type IpcHandler<TArgs = unknown, TResult = unknown> = (
   args: TArgs,
@@ -202,3 +204,11 @@ registerGitDomain(register)
 
 // —— 小 domain（scratch-pad / user-profile / system-prompt / chat-tool）——
 registerMiscDomains(register)
+
+// —— 系统级设置 domain（web-server introspection + app-icon / voice-dictation /
+//   storage / chat-resource 降级）：见 system-settings.ts ——
+// 接在最后：ChatSettings 大量降级 handler 必须先注册，避免其它 domain 漏过。
+registerSystemSettingsDomains(register)
+
+// —— 飞书 / 钉钉 / 企业微信 bridge domain（只读 + 大量降级）：见 bot-bridges.ts ——
+registerBotBridgeDomains(register)

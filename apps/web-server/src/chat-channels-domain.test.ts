@@ -108,3 +108,107 @@ describe('web-server channels domain', () => {
     }
   })
 })
+
+describe('web-server channels domain 写操作（PR3 Bug3）', () => {
+  // channel-manager 在 Bun 环境下 safeStorage 不可用，会走「明文降级」路径；
+  // 这里只验证 API 表面，不依赖真加密。关键验证：create/update/delete 闭环。
+  test('channel:create → list 可见 → channel:update → channel:delete 闭环', async () => {
+    const created = await ipc<{ id: string; name: string; enabled: boolean }>('channel:create', [{
+      name: 'PR3 测试渠道',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'sk-test-pr3',
+      models: [{ id: 'gpt-4o-mini', name: 'GPT-4o mini', enabled: true }],
+      enabled: false,
+    }])
+    expect(created.id).toBeTruthy()
+    expect(created.name).toBe('PR3 测试渠道')
+
+    // list 可见
+    const list = await ipc<{ id: string }[]>('channel:list')
+    expect(list.some((c) => c.id === created.id)).toBe(true)
+
+    // update
+    const updated = await ipc<{ id: string; name: string; enabled: boolean }>('channel:update', [created.id, { name: 'PR3 测试渠道 - 已更新', enabled: true }])
+    expect(updated.name).toBe('PR3 测试渠道 - 已更新')
+    expect(updated.enabled).toBe(true)
+
+    // delete
+    await ipc('channel:delete', [created.id])
+    const after = await ipc<{ id: string }[]>('channel:list')
+    expect(after.some((c) => c.id === created.id)).toBe(false)
+  })
+
+  test('channel:create 拒绝非对象入参', async () => {
+    const res = await ipcRaw('channel:create', [null])
+    expect(res.status).toBe(500)
+    const body = await res.json() as { error: { message: string } }
+    expect(body.error.message).toContain('ChannelCreateInput')
+  })
+
+  test('channel:update 缺 id 参数报错', async () => {
+    const res = await ipcRaw('channel:update', ['', { name: 'x' }])
+    expect(res.status).toBe(500)
+  })
+
+  test('channel:delete 不存在的 id 不崩', async () => {
+    // 主进程 channel-manager 在 id 不存在时 throw；web-server 应该让错误冒泡
+    const res = await ipcRaw('channel:delete', ['no-such-channel-id'])
+    expect(res.status).toBe(500)
+  })
+})
+
+describe('web-server channels domain 网络执行能力（PR3 Bug3）', () => {
+  test('channel:fetch-models 入参校验（无需真网络调用）', async () => {
+    const res = await ipcRaw('channel:fetch-models', [null])
+    expect(res.status).toBe(500)
+    const body = await res.json() as { error: { message: string } }
+    expect(body.error.message).toContain('FetchModelsInput')
+  })
+
+  test('channel:test 不存在的 id 返回 success=false（不崩）', async () => {
+    // 主进程 testChannel 在渠道不存在时返回 {success:false, message:'渠道不存在'}
+    const result = await ipc<{ success: boolean; message?: string }>('channel:test', ['no-such-channel-id'])
+    expect(result.success).toBe(false)
+  })
+
+  test('channel:test-direct 入参校验', async () => {
+    const res = await ipcRaw('channel:test-direct', [null])
+    expect(res.status).toBe(500)
+    const body = await res.json() as { error: { message: string } }
+    expect(body.error.message).toContain('ChannelDirectTestInput')
+  })
+
+  test('channel:get-plan-quota 不存在的 id 返回 message 而不崩', async () => {
+    const result = await ipc<{ success?: boolean; message?: string }>('channel:get-plan-quota', ['no-such-channel-id'])
+    // 主进程在渠道不存在时返回 createUnsupportedPlanQuota
+    expect(typeof result.message).toBe('string')
+  })
+})
+
+describe('web-server channels domain 桌面专属能力降级（PR3 Bug3）', () => {
+  test('channel:decrypt-key 抛 PlatformUnsupportedError（避免 API Key 明文泄霂）', async () => {
+    const res = await ipcRaw('channel:decrypt-key', ['any-id'])
+    expect(res.status).toBe(501)
+    const body = await res.json() as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('PLATFORM_UNSUPPORTED')
+    expect(body.error.message).toContain('Web 形态')
+  })
+
+  for (const oauthChannel of [
+    'channel:codex-oauth-login',
+    'channel:codex-oauth-cancel',
+    'channel:codex-oauth-device-code',
+    'channel:xai-oauth-login',
+    'channel:xai-oauth-cancel',
+    'channel:xai-oauth-device-code',
+  ]) {
+    test(`${oauthChannel} 抛 PlatformUnsupportedError（OAuth 需桌面端 shell.openExternal）`, async () => {
+      const res = await ipcRaw(oauthChannel, [])
+      expect(res.status).toBe(501)
+      const body = await res.json() as { error: { code: string; message: string } }
+      expect(body.error.code).toBe('PLATFORM_UNSUPPORTED')
+      expect(body.error.message).toContain(oauthChannel)
+    })
+  }
+})

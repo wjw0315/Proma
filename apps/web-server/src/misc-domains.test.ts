@@ -118,3 +118,17 @@ describe('web-server chat-tool domain', () => {
     expect(after.some((t) => t.meta.id === 'test-custom-tool')).toBe(false)
   })
 })
+
+describe('web-server chat-tool:test 降级（PR5 Bug3 D3）', () => {
+  test('chat-tool:test 拋 PlatformUnsupportedError，避免 web-shim 默认 null 占位误导 UI', async () => {
+    // 关键点：web-shim 的 pickPlaceholder 对 test* 不匹配任何规则，fallback 是 null。
+    // 如果 channel:unregistered，UI 拿到 null 会误以为「测试成功但无返回」。
+    // 显式拋 PlatformUnsupportedError，UI 可用 isPlatformUnsupportedError 检测后
+    // 给出「Web 形态不支持 chat-tool:test」降级文案。
+    const res = await ipcRaw('chat-tool:test', ['web-search'])
+    expect(res.status).toBe(501)
+    const body = await res.json() as { error: { code: string; message: string } }
+    expect(body.error.code).toBe('PLATFORM_UNSUPPORTED')
+    expect(body.error.message).toContain('chat-tool:test')
+  })
+})

@@ -3,18 +3,29 @@
  *
  * - conversation-manager：纯 JSON 文件（对话索引 + 消息），依赖闭包经
  *   attachment-service 延迟加载改造后在 Bun 下可加载
- * - channel-manager：channels.json；listChannels 返回的 apiKey 保持加密态，
- *   与 Electron 主进程语义一致（Web 端不需要也不应拿到明文 key）
+ * - channel-manager：channels.json；listChannels 返回的 apiKey 保持加密态。
+ *   Web 形态下加密以「safeStorage 不可用 → 明文降级」处理（与主进程 ipc.ts 一致）。
  * - chat-service.sendMessage：复用主进程流式逻辑；sink 包裹 ctx.eventBus.publish
  *   把 STREAM_* 事件推到 SSE，由前端 web-shim 订阅。
  *
- * 范围限制：decrypt-api-key / oauth 等涉密/桌面能力不在此注册；前端调用会得到
- * PlatformUnsupportedError，UI 层用 isPlatformUnsupportedError 检测后给出降级提示。
+ * 范围限制：
+ * - decrypt-api-key / codex-oauth-* / xai-oauth-* 等涉密/桌面能力不在此注册；
+ *   前端调用会得到 PlatformUnsupportedError，UI 层用 isPlatformUnsupportedError
+ *   检测后给出降级提示。
+ * - OAuth device-code SSE 推送同时不可用（依赖 OAuth login 主流程）。
  */
 
 import type { IpcHandler } from '../ipc-router'
 import type { WebServerContext } from '../context'
-import type { ChatSendInput, StreamSink } from '@proma/shared'
+import { PlatformUnsupportedError } from '@proma/platform-ipc'
+import type {
+  ChatSendInput,
+  ChannelCreateInput,
+  ChannelUpdateInput,
+  ChannelDirectTestInput,
+  FetchModelsInput,
+  StreamSink,
+} from '@proma/shared'
 import {
   listConversations as libList,
   createConversation as libCreate,
@@ -25,7 +36,16 @@ import {
   deleteMessage as libDeleteMessage,
   updateContextDividers as libUpdateDividers,
 } from '../../../electron/src/main/lib/conversation-manager'
-import { listChannels as libListChannels } from '../../../electron/src/main/lib/channel-manager'
+import {
+  listChannels as libListChannels,
+  createChannel as libCreateChannel,
+  updateChannel as libUpdateChannel,
+  deleteChannel as libDeleteChannel,
+  fetchModels as libFetchModels,
+  testChannel as libTestChannel,
+  testChannelDirect as libTestChannelDirect,
+  getChannelPlanQuota as libGetChannelPlanQuota,
+} from '../../../electron/src/main/lib/channel-manager'
 import { sendMessage as libSendMessage } from '../../../electron/src/main/lib/chat-service'
 
 /** 从 web-shim 的 args（位置参数数组或单值）取第 n 个参数。 */
@@ -126,4 +146,56 @@ export function registerChatAndChannelsDomains(register: <TArgs, TResult>(channe
 
   // ===== channels（apiKey 保持加密态，与主进程 listChannels 语义一致） =====
   register('channel:list', () => libListChannels())
+
+  // ----- 写操作：创建/更新/删除渠道（复用主进程 channel-manager；Bun 下 safeStorage 不可用
+  //       走「明文降级」路径，与主进程 ipc.ts 同语义） -----
+  register('channel:create', (args) => {
+    const input = arg(args, 0)
+    if (!input || typeof input !== 'object') throw new Error('channel:create 需要 ChannelCreateInput 对象')
+    return libCreateChannel(input as ChannelCreateInput)
+  })
+  register('channel:update', (args) => {
+    const id = requireString(arg(args, 0), 'id')
+    const input = arg(args, 1)
+    if (!input || typeof input !== 'object') throw new Error('channel:update 需要 ChannelUpdateInput 对象')
+    return libUpdateChannel(id, input as ChannelUpdateInput)
+  })
+  register('channel:delete', (args) => {
+    libDeleteChannel(requireString(arg(args, 0), 'id'))
+    return { ok: true }
+  })
+
+  // ----- 模型列表 / 连接测试：纯网络调用，Bun 下可直接跑 -----
+  register('channel:fetch-models', (args) => {
+    const input = arg(args, 0)
+    if (!input || typeof input !== 'object') throw new Error('channel:fetch-models 需要 FetchModelsInput 对象')
+    return libFetchModels(input as FetchModelsInput)
+  })
+  register('channel:test', (args) => libTestChannel(requireString(arg(args, 0), 'id')))
+  register('channel:test-direct', (args) => {
+    const input = arg(args, 0)
+    if (!input || typeof input !== 'object') throw new Error('channel:test-direct 需要 ChannelDirectTestInput 对象')
+    return libTestChannelDirect(input as ChannelDirectTestInput)
+  })
+  register('channel:get-plan-quota', (args) => libGetChannelPlanQuota(requireString(arg(args, 0), 'id')))
+
+  // ----- 桌面专属 / 涉密能力：Web 形态显式拒绝 -----
+  // 解密 API key 在 Web 形态下是安全风险（明文 API key 通过 HTTP 曝露给浏览器）。
+  // Bun 环境下 channel-manager 会走 safeStorage 不可用 → 明文降级路径，会意外泄露。
+  // 这里显式拦截，避免上层误用。
+  register('channel:decrypt-key', () => {
+    throw new PlatformUnsupportedError('channel:decrypt-key', 'Web 形态不在浏览器侧明文呈现 API Key；查看请在桌面端设置页。')
+  })
+
+  // Codex / xAI OAuth 依赖 shell.openExternal，在 Web 形态下无意义（用户已在浏览器里）。
+  // device-code SSE 推送同上，依赖 OAuth 主流程。
+  const oauthUnsupported = (channelName: string) => () => {
+    throw new PlatformUnsupportedError(channelName, `Web 形态不支持 ${channelName}；OAuth 需桌面端 shell.openExternal。`)
+  }
+  register('channel:codex-oauth-login', oauthUnsupported('channel:codex-oauth-login'))
+  register('channel:codex-oauth-cancel', oauthUnsupported('channel:codex-oauth-cancel'))
+  register('channel:codex-oauth-device-code', oauthUnsupported('channel:codex-oauth-device-code'))
+  register('channel:xai-oauth-login', oauthUnsupported('channel:xai-oauth-login'))
+  register('channel:xai-oauth-cancel', oauthUnsupported('channel:xai-oauth-cancel'))
+  register('channel:xai-oauth-device-code', oauthUnsupported('channel:xai-oauth-device-code'))
 }
