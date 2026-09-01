@@ -2213,6 +2213,16 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
 
     window.electronAPI.sendAgentMessage(input).catch((error) => {
       console.error('[AgentView] 发送消息失败:', error)
+      // Web 形态下 agent 运行时通道未注册时（web-shim 不降级发送类 method），
+      // 明确告知用户而不是让「Agent Running」永久挂起。
+      const isPlatformUnsupported = (error as { name?: string } | null)?.name === 'PlatformUnsupportedError'
+      if (isPlatformUnsupported) {
+        toast.error('Web 形态暂不支持发送 Agent 消息', {
+          description: '请在桌面端 Proma 中发送，或切换到 Chat 会话。',
+        })
+      } else {
+        toast.error('发送消息失败', { description: error instanceof Error ? error.message : String(error) })
+      }
       setStreamingStates((prev) => {
         const current = prev.get(sessionId)
         if (!current) return prev

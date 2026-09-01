@@ -14,6 +14,10 @@
 import { loadConfig } from './config'
 import { createApp } from './app'
 import { createPtyWebSocketHandlers } from './pty-handler'
+import { startParentBridge, isParentBridgeEnabled } from './parent-bridge'
+
+// 嵌入模式：尽早启动父进程桥（stdin 行流），让 RPC / 事件桥接可用
+startParentBridge()
 
 const config = loadConfig()
 const app = createApp(config)
@@ -61,6 +65,10 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 // eslint-disable-next-line no-console
 console.log(`[proma/web-server] listening on http://${server.hostname}:${server.port}`)
+if (isParentBridgeEnabled()) {
+  // eslint-disable-next-line no-console
+  console.log('[proma/web-server] 父进程桥已启用（Agent/Chat 运行时委托桌面端执行）')
+}
 if (!config.token) {
   // eslint-disable-next-line no-console
   console.log('[proma/web-server] 无 token 配置，仅允许 loopback 访问')

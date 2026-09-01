@@ -77,11 +77,9 @@ export function createApp(config: WebServerConfig): Hono {
 
   app.get('/health', (c) => c.json({ ok: true, kind: 'web', ts: Date.now() }))
 
-  // 静态托管（鉴权之后，走 ?token= / Bearer）。命中失败则落到 Hono 默认 404。
-  app.get('*', async (c) => {
-    const res = await serveStaticFile(c.req.path)
-    return res ?? c.text('Not Found', 404)
-  })
+  // ===== API 路由必须先于静态 catch-all 注册 =====
+  // （Hono 按注册顺序匹配：app.get('*') 会吞掉后注册的 GET 路由，
+  //   曾导致 /api/events 被 SPA fallback 的 index.html 覆盖，SSE 全部失效）
 
   app.post('/api/ipc', async (c) => {
     const body = await c.req.json().catch(() => null) as
@@ -154,6 +152,12 @@ export function createApp(config: WebServerConfig): Hono {
         unsub()
       }
     })
+  })
+
+  // ===== 静态托管（鉴权之后；所有 API 路由之后注册，避免覆盖 /api/*） =====
+  app.get('*', async (c) => {
+    const res = await serveStaticFile(c.req.path)
+    return res ?? c.text('Not Found', 404)
   })
 
   return app

@@ -24,6 +24,7 @@ import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import type { WebServerSettings, WebServerStatus, WebServerStatusInfo, WebServerLogEntry } from '../../types/settings'
 import { DEFAULT_WEB_SERVER_SETTINGS } from '../../types/settings'
+import { webServerBridge, BRIDGE_FRAME_PREFIX } from './web-server-bridge'
 
 const MAX_LOG_ENTRIES = 500
 
@@ -138,13 +139,16 @@ export class WebServerManager extends EventEmitter {
     if (this.settings.token) {
       env.PROMA_WEB_TOKEN = this.settings.token
     }
+    // 父进程桥：web-server 检测到后启用 stdio JSONL 桥（Agent/Chat 运行时委托）
+    env.PROMA_PARENT_BRIDGE = '1'
     // 静态 UI 托管目录：与 server.cjs 同级的 web/（electron-builder extraResources 打包）。
     // 目录不存在时 web-server 自动降级为纯 API，不影响启动。
     env.PROMA_WEB_STATIC_DIR = join(dirname(entry), 'web')
 
     const spawnOpts: SpawnOptions = {
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // stdin 开为 pipe：父进程桥的响应/事件写入通道；stdout 桥帧由 manager 解析分流
+      stdio: ['pipe', 'pipe', 'pipe'],
       // 与父进程解耦，避免主进程退出把子进程一起带走
       detached: false,
     }
@@ -225,6 +229,7 @@ export class WebServerManager extends EventEmitter {
 
   /** 主进程退出前的同步版停止；不做优雅等待 */
   stopSync(): void {
+    webServerBridge.detach()
     if (!this.child) return
     try {
       this.child.kill('SIGKILL')
@@ -237,8 +242,16 @@ export class WebServerManager extends EventEmitter {
   }
 
   private attachStreams(child: ChildProcess): void {
+    // 先接管子进程 stdout 的桥帧分流（RPC 请求），其余行仍作为日志
+    webServerBridge.attach(child)
     child.stdout?.on('data', (chunk: Buffer) => {
-      this.appendLog('stdout', chunk.toString('utf-8'))
+      const text = chunk.toString('utf-8')
+      // 桥帧行不进日志 UI（属于内部协议流量）
+      const logLines = text
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0 && !line.startsWith(BRIDGE_FRAME_PREFIX))
+        .join('\n')
+      if (logLines) this.appendLog('stdout', logLines)
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       this.appendLog('stderr', chunk.toString('utf-8'))

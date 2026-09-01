@@ -43,6 +43,22 @@ const WEB_PLATFORM: PlatformAPI = createWebPlatform({
  * 优先级：在 Proxy.get 里先查这张表，再查生成表。
  */
 type WebMethod = (...args: unknown[]) => unknown
+
+/**
+ * 不做静默降级的 method：高价值「发送」类动作。
+ *
+ * safeRequest 的占位降级会把 PlatformUnsupportedError 伪装成成功（resolve null/false）。
+ * 对发送消息这类动作，这等于「消息凭空消失 + Agent Running 永久挂起」，用户完全无感知。
+ * 这些 method 让原始错误穿透到调用方，由 UI 的 .catch 展示错误并复位运行状态。
+ *
+ * 注意：新增发送类 method（走 invoke/send 且失败必须可见）时应同步维护此表。
+ */
+const NO_DEGRADE_METHODS = new Set([
+  'sendAgentMessage',            // agent:send-message（Agent 主发送路径）
+  'submitOrEnqueueAgentMessage', // agent:submit-or-enqueue-message（队列立即发送/注入）
+  'queueAgentMessage',           // agent:queue-message（排队发送）
+  'sendMessage',                 // chat:send-message（防御：当前已实现，同类风险）
+])
 const WEB_METHODS_OVERRIDES: Record<string, WebMethod> = {
   // ===== ipcRenderer.sendSync：Web 无同步 IPC 语义，统一返回 false =====
   updateSettingsSync: () => false,
@@ -112,7 +128,12 @@ function buildGeneratedMethod(method: string, spec: GeneratedWebMethodSpec, plat
     }
   }
   const placeholder = pickPlaceholder(method)
-  // 把多个位置参数压成 args 数组传给 platform.request（preload 里 invoke(CH, a, b) 多参）
+  // 把多个位置参数压成 args 数组传给 platform.request（preload 里 invoke(CH, a, b) 多参）。
+  // 发送类 method（NO_DEGRADE_METHODS）不走 safeRequest：PlatformUnsupportedError
+  // 必须穿透到 UI .catch，否则发送失败被伪装成成功，消息凭空消失且无任何提示。
+  if (NO_DEGRADE_METHODS.has(method)) {
+    return (...args: unknown[]) => platform.request(spec.channel, args)
+  }
   return (...args: unknown[]) => safeRequest(platform, spec.channel, args, placeholder)
 }
 

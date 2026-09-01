@@ -209,6 +209,7 @@ import {
   searchConversationMessages,
 } from './lib/conversation-manager'
 import { sendMessage, stopGeneration, generateTitle } from './lib/chat-service'
+import { webServerBridge } from './lib/web-server-bridge'
 import {
   saveAttachment,
   readAttachmentAsBase64,
@@ -1861,9 +1862,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     CHAT_IPC_CHANNELS.SEND_MESSAGE,
     async (event, input: ChatSendInput): Promise<boolean> => {
+      // web-server 桥活跃时同步多播到 web 客户端（桌面→web 实时同步）
+      const bridge = webServerBridge.isActive() ? webServerBridge : null
       const sink: StreamSink = {
         send: (channel, payload) => {
           event.sender.send(channel, payload)
+          bridge?.publishToWeb(channel, payload)
         },
       }
       return sendMessage(input, sink)

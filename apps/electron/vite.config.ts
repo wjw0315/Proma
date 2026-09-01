@@ -31,6 +31,15 @@ export default defineConfig({
       ? resolve(__dirname, 'resources/web-server/web')
       : resolve(__dirname, 'dist/renderer'),
     emptyOutDir: true,
+    // 保持全部模块为带副作用：renderer/main.tsx 顶部对 web-shim 的导入/调用
+    // 会被 vite/rollup 误判为 dead code（`installWebElectronProxy` 内部的
+    // `if (!__PROMA_WEB_MODE__) return` 在 web 模式下被静态求值为 false，
+    // 但 rollup 仍可能因复杂的副作用分析而消除整个模块），从而把 web-shim
+    // 以及 NO_DEGRADE_METHODS 等关键代码全部从 bundle 中剔除，导致 web 形态
+    // 下 window.electronAPI 未安装、React 渲染时调用即崩溃、整页白屏。
+    rollupOptions: {
+      treeshake: false,
+    },
   },
   resolve: {
     alias: {

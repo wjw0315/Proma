@@ -9,6 +9,20 @@
 // 但每个 @font-face 都带 unicode-range，浏览器仅按需下载实际用到的子集（本应用主要是 latin）。
 import '@fontsource-variable/inter/index.css'
 
+// 临时调试：全局错误可见化。wrap 整个应用，捕获渲染错误并悬浮显示。
+import { RenderErrorOverlay, pushRenderError } from './components/debug/RenderErrorOverlay'
+
+// 临时调试：捕获 React 错误边界之外的运行时错误 / 未处理 promise 拒绝
+window.addEventListener('error', (event) => {
+  pushRenderError(event.error ?? new Error(event.message), 'window.error')
+})
+window.addEventListener('unhandledrejection', (event) => {
+  pushRenderError(
+    event.reason instanceof Error ? event.reason : new Error(String(event.reason)),
+    'unhandledrejection',
+  )
+})
+
 // Web 形态 shim：在 Electron 渲染器外部运行时提供 window.electronAPI 替身。
 // 必须在所有 import '@proma/shared' 或访问 window.electronAPI 之前调用。
 import { installWebElectronProxy } from './lib/platform/web-shim'
@@ -1066,26 +1080,28 @@ if (isQuickTaskWindow) {
   // ===== 主窗口：完整渲染 =====
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <ThemeInitializer />
-      <AgentSettingsInitializer />
-      <NotificationsInitializer />
-      <DockBadgeInitializer />
-      <UiPreferencesInitializer />
-      <MarkdownFontSizeInitializer />
-      <ChatListenersInitializer />
-      <AgentListenersInitializer />
-      <ChatToolInitializer />
-      <UpdaterInitializer />
-      <AutomationInitializer />
-      <PlanningInitializer />
-      <FeishuInitializer />
-      <DingTalkInitializer />
-      <TabStatePersistenceInitializer />
-      <LegacyScratchPadMigrationInitializer />
-      <VoiceDictationApp embedded />
-      <GlobalShortcuts />
-      <TabSwitcher />
-      <App />
+      <RenderErrorOverlay>
+        <ThemeInitializer />
+        <AgentSettingsInitializer />
+        <NotificationsInitializer />
+        <DockBadgeInitializer />
+        <UiPreferencesInitializer />
+        <MarkdownFontSizeInitializer />
+        <ChatListenersInitializer />
+        <AgentListenersInitializer />
+        <ChatToolInitializer />
+        <UpdaterInitializer />
+        <AutomationInitializer />
+        <PlanningInitializer />
+        <FeishuInitializer />
+        <DingTalkInitializer />
+        <TabStatePersistenceInitializer />
+        <LegacyScratchPadMigrationInitializer />
+        <VoiceDictationApp embedded />
+        <GlobalShortcuts />
+        <TabSwitcher />
+        <App />
+      </RenderErrorOverlay>
     </React.StrictMode>
   )
 }

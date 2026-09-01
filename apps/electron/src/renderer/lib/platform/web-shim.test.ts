@@ -326,3 +326,65 @@ describe('installWebElectronProxy 端到端', () => {
     )
   })
 })
+
+// ---- 5. 发送类 method 不做静默降级 ----
+// 回归：Web 形态下 agent:send-message 未注册时，safeRequest 占位降级把发送失败伪装成
+// resolve null，消息凭空消失且「Agent Running」永久挂起。发送类动作必须让错误穿透。
+describe('发送类 method 不做静默降级', () => {
+  let originalWindow: unknown
+  let originalMode: boolean
+
+  beforeEach(() => {
+    const g = globalThis as unknown as { window?: unknown; __PROMA_WEB_MODE__?: boolean }
+    originalWindow = g.window
+    originalMode = g.__PROMA_WEB_MODE__ ?? false
+    g.window = {}
+    g.__PROMA_WEB_MODE__ = true
+  })
+
+  afterEach(() => {
+    const g = globalThis as unknown as { window?: unknown; __PROMA_WEB_MODE__?: boolean }
+    if (originalWindow === undefined) {
+      delete g.window
+    } else {
+      g.window = originalWindow
+    }
+    g.__PROMA_WEB_MODE__ = originalMode
+  })
+
+  function installUnsupportedPlatform(): { win: { electronAPI?: unknown } } {
+    const win = (globalThis as unknown as { window: { electronAPI?: unknown } }).window
+    installWebElectronProxy(makeMockPlatform(async (channel) => {
+      throw new PlatformUnsupportedError(channel, `通道 ${channel} 未在 web-server 注册`)
+    }))
+    return { win }
+  }
+
+  function asSendApi(win: { electronAPI?: unknown }): any {
+    const target = (win.electronAPI ?? {}) as object
+    return new Proxy(target, {
+      get: (t, prop) => {
+        if (typeof prop === 'symbol') return (t as Record<symbol, unknown>)[prop]
+        return (t as Record<string, unknown>)[prop as string]
+      },
+    })
+  }
+
+  test('sendAgentMessage / submitOrEnqueueAgentMessage / queueAgentMessage / sendMessage 拒绝而非静默成功', async () => {
+    const { win } = installUnsupportedPlatform()
+    const api = asSendApi(win)
+
+    await expect(api.sendAgentMessage({ sessionId: 's1', userMessage: 'ping' })).rejects.toThrow(/未在 web-server 注册/)
+    await expect(api.submitOrEnqueueAgentMessage({ sessionId: 's1', userMessage: 'ping' })).rejects.toThrow(/未在 web-server 注册/)
+    await expect(api.queueAgentMessage({ sessionId: 's1', userMessage: 'ping' })).rejects.toThrow(/未在 web-server 注册/)
+    await expect(api.sendMessage({ conversationId: 'c1', userMessage: 'ping' })).rejects.toThrow(/未在 web-server 注册/)
+  })
+
+  test('对照：读列表类 method 仍静默降级为占位', async () => {
+    const { win } = installUnsupportedPlatform()
+    const api = asSendApi(win)
+
+    await expect(api.listConversations()).resolves.toEqual([])
+    await expect(api.getSettings()).resolves.toBeNull()
+  })
+})

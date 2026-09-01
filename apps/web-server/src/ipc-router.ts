@@ -29,6 +29,7 @@ import { registerMiscDomains } from './domains/misc-fs'
 import { registerGitDomain } from './domains/git'
 import { registerSystemSettingsDomains } from './domains/system-settings'
 import { registerBotBridgeDomains } from './domains/bot-bridges'
+import { registerParentBridgeDomains, bindRegistryOverride } from './domains/parent-bridge-domains'
 
 export type IpcHandler<TArgs = unknown, TResult = unknown> = (
   args: TArgs,
@@ -49,6 +50,11 @@ export function register<TArgs, TResult>(
 
 export function isRegistered(channel: string): boolean {
   return handlers.has(channel)
+}
+
+/** 受控反注册：仅 parent-bridge domain 覆盖本地实现时使用（如 chat:send-message）。 */
+export function unregister(channel: string): boolean {
+  return handlers.delete(channel)
 }
 
 export async function dispatch(
@@ -212,3 +218,8 @@ registerSystemSettingsDomains(register)
 
 // —— 飞书 / 钉钉 / 企业微信 bridge domain（只读 + 大量降级）：见 bot-bridges.ts ——
 registerBotBridgeDomains(register)
+
+// —— 父进程桥 domain（嵌入模式）：Agent/Chat 运行时委托 Electron 主进程执行 ——
+// 必须在本地实现全部注册之后：chat:send-message 需要覆盖 chat-channels.ts 的本地版本。
+bindRegistryOverride(register, { unregister })
+registerParentBridgeDomains()

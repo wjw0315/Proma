@@ -88,6 +88,15 @@ export function registerSystemSettingsDomains(register: <TArgs, TResult>(channel
   register('web-server:stop', webServerUnsupported('web-server:stop'))
   register('web-server:restart', webServerUnsupported('web-server:restart'))
 
+  // ===== 系统主题推断：web 端根据 prefers-color-scheme 配色方案判断 =====
+  // 桌面端由 ipc.ts 用 nativeTheme.shouldUseDarkColors 返回（不可在 Bun 中调用）。
+  // web 端如果不返回，前端 ThemeInitializer 调用会 30s 超时后拋错，触发 React
+  // ErrorBoundary 卸载整树（白屏）。
+  register('settings:get-system-theme', () => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  })
+
   // ===== App 图标：macOS Dock 图标桌面专属 =====
   register('app-icon:set', (args) => {
     requireString(arg(args, 0), 'variantId')
