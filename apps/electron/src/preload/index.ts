@@ -37,6 +37,7 @@ import type {
   FileOrFolderDialogResult,
   RecentMessagesResult,
   MessageSearchResult,
+  SessionMessageSearchResponse,
   AgentSessionMeta,
   AgentActiveSessionSnapshot,
   SetAgentSessionActiveWorktreeInput,
@@ -45,6 +46,7 @@ import type {
   AgentThinkingLevel,
   AgentStreamEvent,
   AgentStreamCompletePayload,
+  AgentStreamErrorPayload,
   AgentWorkspace,
   CreateAgentWorkspaceInput,
   CreateAgentProjectResult,
@@ -114,6 +116,7 @@ import type {
   AgentQueuedMessageControlInput,
   AgentMoveQueuedMessageInput,
   AgentQueuedMessageStatus,
+  AgentQueuedMessageSnapshot,
   PendingRequestsSnapshot,
   VaultCandidate,
   VaultDeleteInput,
@@ -355,6 +358,9 @@ export interface ElectronAPI {
   /** 获取对话最近 N 条消息（分页加载） */
   getRecentMessages: (id: string, limit: number) => Promise<RecentMessagesResult>
 
+  /** 获取指定消息附近的有限窗口，供搜索定位 */
+  getConversationMessagesAround: (id: string, messageId: string, radius?: number) => Promise<ChatMessage[]>
+
   /** 更新对话标题 */
   updateConversationTitle: (id: string, title: string) => Promise<ConversationMeta>
 
@@ -370,8 +376,11 @@ export interface ElectronAPI {
   /** 切换对话归档状态 */
   toggleArchiveConversation: (id: string) => Promise<ConversationMeta>
 
-  /** 搜索对话消息内容 */
+  /** 搜索全部对话消息内容 */
   searchConversationMessages: (query: string) => Promise<MessageSearchResult[]>
+
+  /** 搜索当前对话完整持久化历史（仅返回命中元数据） */
+  searchConversationSessionMessages: (conversationId: string, query: string) => Promise<SessionMessageSearchResponse>
 
   // ===== 教程 =====
 
@@ -651,6 +660,8 @@ export interface ElectronAPI {
   cancelAgentQueuedMessage: (input: AgentQueuedMessageControlInput) => Promise<boolean>
   moveAgentQueuedMessage: (input: AgentMoveQueuedMessageInput) => Promise<boolean>
   onAgentQueuedMessageStatus: (callback: (status: AgentQueuedMessageStatus) => void) => () => void
+  /** 获取主进程持有的 deferred queue 快照；用于 renderer 重载恢复队列 UI。 */
+  getQueuedAgentMessages: (sessionId: string) => Promise<AgentQueuedMessageSnapshot[]>
 
   // ===== Agent 工作区管理相关 =====
 
@@ -821,7 +832,7 @@ export interface ElectronAPI {
   onAgentStreamComplete: (callback: (data: AgentStreamCompletePayload) => void) => () => void
 
   /** 订阅 Agent 流式错误事件 */
-  onAgentStreamError: (callback: (data: { sessionId: string; error: string }) => void) => () => void
+  onAgentStreamError: (callback: (data: AgentStreamErrorPayload) => void) => () => void
 
   /** 订阅 Agent 标题自动更新事件 */
   onAgentTitleUpdated: (callback: (data: { sessionId: string; title: string }) => void) => () => void
@@ -969,8 +980,11 @@ export interface ElectronAPI {
   /** 写入文本文件（供 Markdown 内联编辑使用） */
   writeTextFile: (filePath: string, content: string, access?: import('@proma/shared').FileAccessOptions) => Promise<boolean>
 
-  /** 仅解析文件路径（供 PDF/图片等用 proma-file:// 加载） */
+  // 仅解析文件路径（供 PDF/图片等用 proma-file:// 加载）
   resolveFilePath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<import('@proma/shared').ResolvedFileUrl | null>
+
+  /** 解析当前 Markdown 同目录内的相对媒体文件（仅供 LiveMarkdown 图片使用） */
+  resolveMarkdownMedia: (markdownFilePath: string, src: string, access?: import('@proma/shared').FileAccessOptions) => Promise<import('@proma/shared').ResolvedFileUrl | null>
 
   /** 解析 HTML 预览路径，并授权加载同目录的相对资源 */
   resolveHtmlPreviewPath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<import('@proma/shared').ResolvedFileUrl | null>
@@ -1596,6 +1610,10 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(CHAT_IPC_CHANNELS.GET_RECENT_MESSAGES, id, limit)
   },
 
+  getConversationMessagesAround: (id: string, messageId: string, radius?: number) => {
+    return ipcRenderer.invoke(CHAT_IPC_CHANNELS.GET_MESSAGES_AROUND, id, messageId, radius)
+  },
+
   updateConversationTitle: (id: string, title: string) => {
     return ipcRenderer.invoke(CHAT_IPC_CHANNELS.UPDATE_TITLE, id, title)
   },
@@ -1618,6 +1636,10 @@ const electronAPI: ElectronAPI = {
 
   searchConversationMessages: (query: string) => {
     return ipcRenderer.invoke(CHAT_IPC_CHANNELS.SEARCH_MESSAGES, query)
+  },
+
+  searchConversationSessionMessages: (conversationId: string, query: string) => {
+    return ipcRenderer.invoke(CHAT_IPC_CHANNELS.SEARCH_SESSION_MESSAGES, conversationId, query)
   },
 
   // 教程
@@ -1978,6 +2000,9 @@ const electronAPI: ElectronAPI = {
   moveAgentQueuedMessage: (input: AgentMoveQueuedMessageInput) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.MOVE_QUEUED_MESSAGE, input)
   },
+  getQueuedAgentMessages: (sessionId: string) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_QUEUED_MESSAGES, sessionId)
+  },
   onAgentQueuedMessageStatus: (callback: (status: AgentQueuedMessageStatus) => void) => {
     const listener = (_: unknown, status: AgentQueuedMessageStatus): void => callback(status)
     ipcRenderer.on(AGENT_IPC_CHANNELS.QUEUED_MESSAGE_STATUS, listener)
@@ -2245,8 +2270,8 @@ const electronAPI: ElectronAPI = {
     return () => { ipcRenderer.removeListener(AGENT_IPC_CHANNELS.STREAM_COMPLETE, listener) }
   },
 
-  onAgentStreamError: (callback: (data: { sessionId: string; error: string }) => void) => {
-    const listener = (_: unknown, data: { sessionId: string; error: string }): void => callback(data)
+  onAgentStreamError: (callback: (data: AgentStreamErrorPayload) => void) => {
+    const listener = (_: unknown, data: AgentStreamErrorPayload): void => callback(data)
     ipcRenderer.on(AGENT_IPC_CHANNELS.STREAM_ERROR, listener)
     return () => { ipcRenderer.removeListener(AGENT_IPC_CHANNELS.STREAM_ERROR, listener) }
   },
@@ -2468,6 +2493,10 @@ const electronAPI: ElectronAPI = {
 
   resolveFilePath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => {
     return ipcRenderer.invoke('file:resolve-path', filePath, access) as Promise<import('@proma/shared').ResolvedFileUrl | null>
+  },
+
+  resolveMarkdownMedia: (markdownFilePath: string, src: string, access?: import('@proma/shared').FileAccessOptions) => {
+    return ipcRenderer.invoke('file:resolve-markdown-media', markdownFilePath, src, access) as Promise<import('@proma/shared').ResolvedFileUrl | null>
   },
 
   resolveHtmlPreviewPath: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => {

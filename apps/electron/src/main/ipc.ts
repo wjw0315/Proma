@@ -199,6 +199,7 @@ import {
   listConversations,
   createConversation,
   getConversationMessages,
+  getConversationMessagesAround,
   getRecentMessages,
   updateConversationMeta,
   deleteConversation,
@@ -207,6 +208,7 @@ import {
   updateContextDividers,
   autoArchiveConversations,
   searchConversationMessages,
+  searchConversationSessionMessages,
 } from './lib/conversation-manager'
 import { sendMessage, stopGeneration, generateTitle } from './lib/chat-service'
 import { webServerBridge } from './lib/web-server-bridge'
@@ -299,7 +301,7 @@ import {
   searchAgentSessionReferences,
   resolveAgentCwd,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, isAgentSessionBusy, listActiveAgentSessionSnapshots, reserveAgentSessionStart, queueAgentMessage, submitOrEnqueueAgentMessage, enqueueAgentQueuedMessage, cancelAgentQueuedMessage, moveAgentQueuedMessage, clearAgentQueuedMessages, updateAgentPermissionMode, rewindAgentSession, setVisibleAgentSession } from './lib/agent-service'
+import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, isAgentSessionBusy, listActiveAgentSessionSnapshots, listQueuedAgentMessages, reserveAgentSessionStart, queueAgentMessage, submitOrEnqueueAgentMessage, enqueueAgentQueuedMessage, cancelAgentQueuedMessage, moveAgentQueuedMessage, clearAgentQueuedMessages, updateAgentPermissionMode, rewindAgentSession, setVisibleAgentSession } from './lib/agent-service'
 import { permissionService } from './lib/agent-permission-service'
 import { resolvePathAgainstAgentCwd } from './lib/agent-file-path'
 import { askUserService } from './lib/agent-ask-user-service'
@@ -310,6 +312,7 @@ import { calculateStorageStats, cleanupStorage, cleanupTempFiles } from './lib/s
 import type { CleanupOptions } from './lib/storage-service'
 import {
   listAgentWorkspaces,
+  listAgentWorkspacesWithProjectRootStatus,
   createAgentWorkspace,
   updateAgentWorkspace,
   relinkAgentWorkspaceProjectRoot,
@@ -1775,6 +1778,14 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  // 获取搜索命中附近的有限消息窗口
+  ipcMain.handle(
+    CHAT_IPC_CHANNELS.GET_MESSAGES_AROUND,
+    async (_, id: string, messageId: string, radius?: number): Promise<ChatMessage[]> => {
+      return getConversationMessagesAround(id, messageId, radius)
+    }
+  )
+
   // 更新对话标题
   ipcMain.handle(
     CHAT_IPC_CHANNELS.UPDATE_TITLE,
@@ -1833,11 +1844,19 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // 搜索对话消息内容
+  // 搜索所有对话消息内容
   ipcMain.handle(
     CHAT_IPC_CHANNELS.SEARCH_MESSAGES,
     async (_, query: string) => {
       return searchConversationMessages(query)
+    }
+  )
+
+  // 搜索当前对话的完整持久化历史（只返回命中元数据，避免传输整份 JSONL）
+  ipcMain.handle(
+    CHAT_IPC_CHANNELS.SEARCH_SESSION_MESSAGES,
+    async (_, conversationId: string, query: string) => {
+      return searchConversationSessionMessages(conversationId, query)
     }
   )
 
@@ -2722,7 +2741,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.LIST_WORKSPACES,
     async (): Promise<AgentWorkspace[]> => {
-      const workspaces = listAgentWorkspaces()
+      const workspaces = await listAgentWorkspacesWithProjectRootStatus()
       for (const workspace of workspaces) {
         if (workspace.projectRootPath) watchAttachedDirectory(workspace.projectRootPath)
         for (const filePath of getWorkspaceAttachedFiles(workspace.slug)) {
@@ -2737,7 +2756,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_WORKSPACE,
     async (_, input: import('@proma/shared').CreateAgentWorkspaceInput): Promise<AgentWorkspace> => {
-      const workspace = createAgentWorkspace(input)
+      const workspace = await createAgentWorkspace(input)
       if (workspace.projectRootPath) watchAttachedDirectory(workspace.projectRootPath)
       return workspace
     }
@@ -2747,7 +2766,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_PROJECT,
     async (_, input: import('@proma/shared').CreateAgentWorkspaceInput, channelId?: string, modelId?: string): Promise<import('@proma/shared').CreateAgentProjectResult> => {
-      const workspace = createAgentWorkspace(input)
+      const workspace = await createAgentWorkspace(input)
       if (workspace.projectRootPath) watchAttachedDirectory(workspace.projectRootPath)
 
       try {
@@ -2780,7 +2799,7 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.RELINK_WORKSPACE_PROJECT_ROOT,
     async (_, id: string, projectRootPath: string): Promise<AgentWorkspace> => {
       const previousRoot = getAgentWorkspace(id)?.projectRootPath
-      const updated = relinkAgentWorkspaceProjectRoot(id, projectRootPath)
+      const updated = await relinkAgentWorkspaceProjectRoot(id, projectRootPath)
       if (previousRoot && previousRoot !== updated.projectRootPath) {
         releaseDirectoryWatcherIfUnreferenced(previousRoot)
       }
@@ -2793,7 +2812,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.RESTORE_WORKSPACE_PROJECT_ROOT,
     async (_, id: string): Promise<AgentWorkspace> => {
-      const updated = restoreAgentWorkspaceProjectRoot(id)
+      const updated = await restoreAgentWorkspaceProjectRoot(id)
       if (updated.projectRootPath) watchAttachedDirectory(updated.projectRootPath)
       return updated
     }
@@ -3382,7 +3401,9 @@ export function registerIpcHandlers(): void {
             console.error('[飞书 Session 镜像] 流式卡片初始化失败:', error)
           })
         }
-        await runAgent(input, event.sender)
+        // runGeneration 是主进程内部运行身份；renderer IPC 绝不能指定或复用它。
+        const { runGeneration: _ignoredRunGeneration, ...publicInput } = input as AgentSendInput & { runGeneration?: unknown }
+        await runAgent(publicInput, event.sender)
       } finally {
         releaseStart()
       }
@@ -3424,6 +3445,14 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.SUBMIT_OR_ENQUEUE_MESSAGE,
     async (event, input: import('@proma/shared').AgentSubmitOrEnqueueInput): Promise<import('@proma/shared').AgentSubmitOrEnqueueResult> => {
       return submitOrEnqueueAgentMessage(input, event.sender)
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_QUEUED_MESSAGES,
+    async (_, sessionId: string): Promise<import('@proma/shared').AgentQueuedMessageSnapshot[]> => {
+      if (!sessionId || typeof sessionId !== 'string') return []
+      return listQueuedAgentMessages(sessionId)
     },
   )
 
@@ -4130,6 +4159,24 @@ export function registerIpcHandlers(): void {
       writeFileSync(resolved, content, 'utf-8')
       return true
     }
+  )
+
+  // 解析当前 Markdown 同目录内的相对图片。该接口不接受 unrestricted，避免
+  // Markdown 文本中的任意路径借通用预览接口换取本地文件 token。
+  ipcMain.handle(
+    'file:resolve-markdown-media',
+    async (_, markdownFilePath: string, src: string, access?: FileAccessOptions | string[]): Promise<ResolvedFileUrl | null> => {
+      const { resolveMarkdownRelativeMediaPath } = await import('./lib/markdown-media-service')
+      const options = normalizeFileAccessOptions(access)
+      const result = resolveMarkdownRelativeMediaPath(markdownFilePath, src, options)
+      if (!result) return null
+      try {
+        return { url: registerPromaFilePath(result) }
+      } catch (err) {
+        console.warn('[IPC] file:resolve-markdown-media 无法注册图片，跳过:', result, err instanceof Error ? err.message : err)
+        return null
+      }
+    },
   )
 
   // 仅解析文件路径（供 PDF/图片等用 proma-file:// 加载）

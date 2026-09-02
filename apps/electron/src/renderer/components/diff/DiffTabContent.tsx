@@ -39,12 +39,13 @@ import { useFocusAgentSessionInput } from '@/hooks/useFocusAgentSessionInput'
 import { useShortcut } from '@/hooks/useShortcut'
 import { initShortcutRegistry } from '@/lib/shortcut-registry'
 import { DiffView } from './DiffView'
-import { LiveMarkdownEditor, type LiveMarkdownTextSelection } from '@/components/markdown/LiveMarkdownEditor'
+import { LiveMarkdownEditor, type LiveMarkdownEditorHandle, type LiveMarkdownTextSelection } from '@/components/markdown/LiveMarkdownEditor'
+import { createLiveMarkdownImageResolver } from '@/components/markdown/live-markdown-media'
 import { getPreviewCandidateBasePaths, isAbsoluteFilePath } from './preview-open-path'
 import { DefaultAppOpenButton } from './DefaultAppOpenButton'
 import { UnsupportedFilePreview } from './UnsupportedFilePreview'
 import { PreviewFindBar } from './PreviewFindBar'
-import { MarkdownToc } from './MarkdownToc'
+import { MarkdownToc, MarkdownTocScrollTail } from './MarkdownToc'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PIERRE_FILE_CSS } from '@/components/agent/tool-result-renderers/pierre-styles'
 import { SelectionActionPopover } from '@/components/selection/SelectionActionPopover'
@@ -336,6 +337,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const imageDragging = React.useRef(false)
   const imageDragStart = React.useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
   const scrollContainerRef = React.useRef<HTMLDivElement>(null)
+  const markdownEditorRef = React.useRef<LiveMarkdownEditorHandle>(null)
   const [findOpen, setFindOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(true)
   const [copied, setCopied] = React.useState(false)
@@ -358,6 +360,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const theme = useAtomValue(resolvedThemeAtom)
   const [codeWrap, setCodeWrap] = useAtom(previewCodeWrapAtom)
   const [tocOpen, setTocOpen] = useAtom(markdownTocOpenAtom)
+  const tocContent = React.useDeferredValue(activeMarkdownEditing ? markdownDraft : newContent)
 
   const canTogglePreviewWrap =
     previewOnly &&
@@ -399,13 +402,6 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     markdownEditing: activeMarkdownEditing,
     markdownSourceMode: activeMarkdownEditing && markdownSourceMode,
   }), [filePath, loading, activeMarkdownEditing, markdownSourceMode, newContent.length, officeHtml.length, officeHtmlUrl, htmlPreviewUrl, htmlSourceMode, oldContent.length, previewOnly, viewMode])
-
-  // 目录必须随完整 Markdown 内容更新：仅使用长度会漏掉等长标题修改，留下
-  // 旧标题、旧锚点或错误层级。loading/编辑态切换仍不参与该 key，避免无关抖动。
-  const tocContentKey = React.useMemo(
-    () => JSON.stringify({ filePath, previewContentVersion, content: newContent }),
-    [filePath, previewContentVersion, newContent],
-  )
 
   // ===== 选中文本引用（Quoted Selection）=====
 
@@ -593,6 +589,12 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     // 绝对路径不追加该回退，避免失效路径按同名文件误命中会话目录。
     candidateBasePaths: getPreviewCandidateBasePaths(basePaths, isAbsoluteFilePath(filePath) ? undefined : dirPath),
   }), [sessionId, basePaths, dirPath, filePath, workspaceSkillSlug, legacySkillFilePath])
+
+  const resolveProjectMarkdownImageSrc = React.useMemo(() => (
+    createLiveMarkdownImageResolver(filePath, async (candidate) => (
+      (await window.electronAPI.resolveMarkdownMedia(filePath, candidate, fileAccess))?.url ?? null
+    ))
+  ), [fileAccess, filePath])
 
   const contentCacheScope = React.useMemo(() => JSON.stringify({
     dirPath,
@@ -1026,14 +1028,69 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const prevRefreshVersionRef = React.useRef(refreshVersion)
   const restoreScrollRef = React.useRef(false)
   const restoreRafRef = React.useRef(0)
+  const scrollNavigationEpochRef = React.useRef(0)
+
+  const cancelPendingPreviewScrollRestore = React.useCallback(() => {
+    // A user-initiated TOC jump supersedes a restore captured before this click.
+    // Otherwise the restore rAF may write the old (often zero) position after
+    // CodeMirror has already moved the document to the requested heading.
+    scrollNavigationEpochRef.current += 1
+    restoreScrollRef.current = false
+    if (restoreRafRef.current) {
+      cancelAnimationFrame(restoreRafRef.current)
+      restoreRafRef.current = 0
+    }
+  }, [])
+
+  // 等待异步 Markdown 渲染稳定期间保留布局但隐藏正文，避免切回标签时
+  // 先暴露文档顶部、再跳回保存位置。
+  const [liveMarkdownReadyKey, setLiveMarkdownReadyKey] = React.useState<string | null>(null)
+  const [restoredScrollKey, setRestoredScrollKey] = React.useState<string | null>(null)
+  const restoreGenerationRef = React.useRef(0)
+  const cachedScrollPosition = scrollPositionCache.get(scrollKey)
+  const shouldMaskMarkdownForScrollRestore = Boolean(
+    isMarkdown
+    && !loading
+    && cachedScrollPosition
+    && (cachedScrollPosition.top > 0 || cachedScrollPosition.left > 0)
+    && restoredScrollKey !== scrollKey,
+  )
+
+  React.useLayoutEffect(() => {
+    // 同一预览组件复用打开另一文件时，旧编辑器的 ready / restore 结果不能解开新文件遮罩。
+    if (liveMarkdownReadyKey && liveMarkdownReadyKey !== scrollKey) setLiveMarkdownReadyKey(null)
+    if (restoredScrollKey && restoredScrollKey !== scrollKey) setRestoredScrollKey(null)
+  }, [liveMarkdownReadyKey, restoredScrollKey, scrollKey])
+
+  React.useEffect(() => {
+    // 异常 widget 或极端资源压力不能让阅读区永久空白；超时后 best-effort 恢复。
+    if (!shouldMaskMarkdownForScrollRestore || liveMarkdownReadyKey === scrollKey) return
+    const timer = window.setTimeout(() => {
+      restoreScrollRef.current = false
+      restoreGenerationRef.current++
+      if (restoreRafRef.current) {
+        cancelAnimationFrame(restoreRafRef.current)
+        restoreRafRef.current = 0
+      }
+      const position = scrollPositionCache.get(scrollKey)
+      const container = scrollContainerRef.current
+      if (position && container) {
+        container.scrollTop = position.top
+        container.scrollLeft = position.left
+      }
+      setRestoredScrollKey(scrollKey)
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [liveMarkdownReadyKey, scrollKey, shouldMaskMarkdownForScrollRestore])
 
   const handleLiveMarkdownReady = React.useCallback(() => {
-    // Live Markdown 异步挂载前外层没有可恢复的内容高度，首轮恢复会被浏览器钳制到 0。
-    // 只有编辑器就绪后重新设置标记，才会在真实内容高度上恢复原阅读位置。
-    if (!scrollPositionCache.has(scrollKey)) return
+    // ink-mde 异步完成后才允许本 Markdown 的恢复事务结束；不能以空容器的高度稳定
+    // 来提前解除遮罩，否则会重新出现“顶部可见后再跳回”的闪动。
+    setLiveMarkdownReadyKey(scrollKey)
+    if (!scrollPositionCache.has(scrollKey) || restoredScrollKey === scrollKey) return
     restoreScrollRef.current = true
     setPreviewScrollRestoreVersion((version) => version + 1)
-  }, [scrollKey])
+  }, [restoredScrollKey, scrollKey])
 
   // WHEN content version changes (refreshVersion bump): delete stored scroll position
   // 只在内容变化时清除，切换文件时保留位置以支持返回导航。正在编辑的 Markdown
@@ -1060,23 +1117,54 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     restoreScrollRef.current = true
   }, [previewScrollRestoreVersion, scrollKey])
 
-  // RESTORE scroll position after cached content renders.
-  // 等待滚动容器内容高度连续 3 帧稳定后再恢复，避免异步渲染
-  // （Shiki tokenize、ProseMirror mount）导致高度变化引起滚动偏移。
+  // RESTORE scroll position after cached content renders. Markdown 必须等待对应
+  // 实例的 ink-mde onReady；高度稳定 3 帧或最多 30 帧后恢复，避免永久遮罩。
   React.useEffect(() => {
     if (loading || !restoreScrollRef.current) return
+    if (isMarkdown && liveMarkdownReadyKey !== scrollKey) return
 
     const pos = scrollPositionCache.get(scrollKey)
     if (!pos || !scrollContainerRef.current) {
       restoreScrollRef.current = false
+      setRestoredScrollKey(scrollKey)
       return
     }
 
+    const generation = ++restoreGenerationRef.current
     const el = scrollContainerRef.current
+    const restoreEpoch = scrollNavigationEpochRef.current
+    const maxFrames = 30
+    let frameCount = 0
     let prevHeight = el.scrollHeight
     let stableFrames = 0
 
+    const canRestore = (): boolean => (
+      restoreGenerationRef.current === generation
+      && restoreEpoch === scrollNavigationEpochRef.current
+      && restoreScrollRef.current
+    )
+
+    const completeRestore = (): void => {
+      if (!canRestore()) return
+      // 首帧与下一帧各写入一次，覆盖 CodeMirror / widget 延迟测量导致的钳制。
+      el.scrollTop = pos.top
+      el.scrollLeft = pos.left
+      restoreRafRef.current = requestAnimationFrame(() => {
+        if (!canRestore()) return
+        el.scrollTop = pos.top
+        el.scrollLeft = pos.left
+        restoreScrollRef.current = false
+        setRestoredScrollKey(scrollKey)
+        restoreRafRef.current = 0
+      })
+    }
+
     const check = () => {
+      if (!canRestore()) {
+        restoreRafRef.current = 0
+        return
+      }
+      frameCount++
       const curHeight = el.scrollHeight
       if (curHeight === prevHeight) {
         stableFrames++
@@ -1084,11 +1172,8 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
         stableFrames = 0
         prevHeight = curHeight
       }
-      if (stableFrames >= 3) {
-        restoreScrollRef.current = false
-        el.scrollTop = pos.top
-        el.scrollLeft = pos.left
-        restoreRafRef.current = 0
+      if (stableFrames >= 3 || frameCount >= maxFrames) {
+        completeRestore()
         return
       }
       restoreRafRef.current = requestAnimationFrame(check)
@@ -1097,12 +1182,14 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     restoreRafRef.current = requestAnimationFrame(check)
 
     return () => {
+      if (restoreGenerationRef.current === generation) restoreGenerationRef.current++
       if (restoreRafRef.current) {
         cancelAnimationFrame(restoreRafRef.current)
         restoreRafRef.current = 0
       }
     }
-  }, [loading, previewScrollRestoreVersion, scrollKey])
+  }, [isMarkdown, liveMarkdownReadyKey, loading, previewScrollRestoreVersion, scrollKey])
+
 
   // SAVE scroll position on scroll (throttled via rAF)
   const scrollRafRef = React.useRef(0)
@@ -1697,8 +1784,10 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
         />
         <MarkdownToc
           containerRef={scrollContainerRef}
-          contentKey={tocContentKey}
+          content={tocContent}
+          editorRef={markdownEditorRef}
           enabled={Boolean(isMarkdown && tocOpen)}
+          onBeforeNavigate={cancelPendingPreviewScrollRestore}
           onOpenChange={setTocOpen}
         />
         {isMarkdown && !tocOpen && (
@@ -1845,14 +1934,19 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
               )
             ) : isMarkdown ? (
               <LiveMarkdownEditor
-                key={readOnly ? 'readonly' : 'editable'}
+                key={`${readOnly ? 'readonly' : 'editable'}:${filePath}`}
+                ref={markdownEditorRef}
                 value={readOnly ? newContent : markdownDraft}
                 onChange={updateMarkdownDraft}
                 onSave={() => void saveMarkdownEdit()}
                 onReady={handleLiveMarkdownReady}
                 onTextSelectionChange={handleLiveMarkdownSelectionChange}
                 readOnly={Boolean(readOnly)}
-                className="live-markdown-external-scroll"
+                resolveImageSrc={resolveProjectMarkdownImageSrc}
+                className={cn(
+                  'live-markdown-external-scroll',
+                  shouldMaskMarkdownForScrollRestore && 'invisible',
+                )}
               />
             ) : isPlainTextEditable && activeMarkdownEditing ? (
               <textarea
@@ -1896,6 +1990,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
           ) : (
             <DiffView oldContent={oldContent} newContent={newContent} filePath={filePath} viewMode={viewMode} />
           )}
+          {isMarkdown && !loading && <MarkdownTocScrollTail containerRef={scrollContainerRef} enabled />}
         </div>
         {previewSelection && (
           <SelectionActionPopover
